@@ -19,6 +19,7 @@
 
 #include <tuple>
 #include <chrono>
+#include <future>
 
 namespace eventpp {
 
@@ -69,10 +70,24 @@ private:
 
 	using QueuedEventArgumentsType = std::tuple<typename std::decay<Args>::type...>;
 
+	struct QueuedResultState
+	{
+		QueuedResultState() : promise(new std::promise<typename super::DispatchResult>()), started(false) {}
+
+		void cancel() noexcept
+		{
+			if(! started.exchange(true)) { promise.reset(); }
+		}
+
+		std::unique_ptr<std::promise<typename super::DispatchResult> > promise;
+		typename Threading::template Atomic<bool> started;
+	};
+
 	struct QueuedEvent_
 	{
 		typename std::decay<typename super::Event>::type event;
 		QueuedEventArgumentsType arguments;
+		std::shared_ptr<QueuedResultState> resultState;
 
 		typename super::Event getEvent() const {
 			return event;
@@ -97,6 +112,8 @@ public:
 	using Handle = typename super::Handle;
 	using Callback = typename super::Callback;
 	using Mutex = typename super::Mutex;
+	using DispatchResult = typename super::DispatchResult;
+	using ResultFuture = std::future<DispatchResult>;
 
 	struct DisableQueueNotify
 	{
@@ -154,6 +171,42 @@ public:
 		return *this;
 	}
 
+	~EventQueueBase()
+	{
+		// Destruction is not concurrent with other queue operations.
+		for(auto & item : queueList) {
+			if(! item.empty() && item.get().resultState) { item.get().resultState->cancel(); }
+		}
+	}
+
+	template <typename ...A>
+	auto enqueueWithResults(A && ...args)
+		-> typename std::enable_if<sizeof...(A) == sizeof...(Args) && CanCollectReturn<ReturnType>::value, ResultFuture>::type
+	{
+		static_assert(super::ArgumentPassingMode::canIncludeEventType, "Event type should be included in enqueue arguments.");
+		using GetEvent = typename SelectGetEvent<Policies_, EventType_, HasFunctionGetEvent<Policies_, A...>::value>::Type;
+		auto state = std::make_shared<QueuedResultState>();
+		auto future = state->promise->get_future();
+		doEnqueue(QueuedEvent { GetEvent::getEvent(args...),
+			QueuedEventArgumentsType(std::forward<A>(args)...), std::move(state) });
+		if(doCanProcess()) { queueListConditionVariable.notify_one(); }
+		return future;
+	}
+
+	template <typename T, typename ...A>
+	auto enqueueWithResults(T && first, A && ...args)
+		-> typename std::enable_if<sizeof...(A) == sizeof...(Args) && CanCollectReturn<ReturnType>::value, ResultFuture>::type
+	{
+		static_assert(super::ArgumentPassingMode::canExcludeEventType, "Event type should not be included in callback arguments.");
+		using GetEvent = typename SelectGetEvent<Policies_, EventType_, HasFunctionGetEvent<Policies_, T &&, A...>::value>::Type;
+		auto state = std::make_shared<QueuedResultState>();
+		auto future = state->promise->get_future();
+		doEnqueue(QueuedEvent { GetEvent::getEvent(std::forward<T>(first), args...),
+			QueuedEventArgumentsType(std::forward<A>(args)...), std::move(state) });
+		if(doCanProcess()) { queueListConditionVariable.notify_one(); }
+		return future;
+	}
+
 	template <typename ...A>
 	auto enqueue(A && ...args) -> typename std::enable_if<sizeof...(A) == sizeof...(Args), void>::type
 	{
@@ -163,7 +216,7 @@ public:
 
 		doEnqueue(QueuedEvent{
 			GetEvent::getEvent(args...),
-			QueuedEventArgumentsType(std::forward<A>(args)...)
+			QueuedEventArgumentsType(std::forward<A>(args)...), nullptr
 		});
 
 		if(doCanProcess()) {
@@ -180,7 +233,7 @@ public:
 
 		doEnqueue(QueuedEvent{
 			GetEvent::getEvent(std::forward<T>(first), args...),
-			QueuedEventArgumentsType(std::forward<A>(args)...)
+			QueuedEventArgumentsType(std::forward<A>(args)...), nullptr
 		});
 
 		if(doCanProcess()) {
@@ -205,6 +258,7 @@ public:
 
 			if(! tempList.empty()) {
 				for(auto & item : tempList) {
+					if(item.get().resultState) { item.get().resultState->cancel(); }
 					item.clear();
 				}
 
@@ -232,7 +286,7 @@ public:
 				for(auto & item : tempList) {
 					doDispatchQueuedEvent(
 						item.get(),
-						typename MakeIndexSequence<sizeof...(Args)>::Type()
+						typename MakeIndexSequence<sizeof...(Args)>::Type(), &tempList
 					);
 					item.clear();
 				}
@@ -266,8 +320,8 @@ public:
 			if(! tempList.empty()) {
 				auto & item = tempList.front();
 				doDispatchQueuedEvent(
-					item.get(),
-					typename MakeIndexSequence<sizeof...(Args)>::Type()
+				item.get(),
+				typename MakeIndexSequence<sizeof...(Args)>::Type(), &tempList
 				);
 				item.clear();
 
@@ -302,11 +356,11 @@ public:
 					if(doInvokeFuncWithQueuedEvent(
 							predictor,
 							it->get(),
-							typename MakeIndexSequence<sizeof...(Args)>::Type())
+							typename MakeIndexSequence<sizeof...(Args)>::Type(), &tempList)
 						) {
 						doDispatchQueuedEvent(
 							it->get(),
-							typename MakeIndexSequence<sizeof...(Args)>::Type()
+							typename MakeIndexSequence<sizeof...(Args)>::Type(), &tempList
 						);
 						it->clear();
 						
@@ -357,14 +411,14 @@ public:
 					if(doInvokeFuncWithQueuedEvent(
 							predictor,
 							it->get(),
-							typename MakeIndexSequence<sizeof...(Args)>::Type())
+							typename MakeIndexSequence<sizeof...(Args)>::Type(), &tempList)
 						) {
 						break;
 					}
 					else {
 						doDispatchQueuedEvent(
 							it->get(),
-							typename MakeIndexSequence<sizeof...(Args)>::Type()
+							typename MakeIndexSequence<sizeof...(Args)>::Type(), &tempList
 						);
 						it->clear();
 						
@@ -409,6 +463,13 @@ public:
 	}
 
 	using super::dispatch;
+
+	template <typename U>
+	auto dispatch(U & queuedEvent)
+		-> typename std::enable_if<std::is_same<U, QueuedEvent>::value, void>::type
+	{
+		doDispatchQueuedEvent(queuedEvent, typename MakeIndexSequence<sizeof...(Args)>::Type());
+	}
 
 	template <typename U>
 	auto dispatch(const U & queuedEvent)
@@ -473,15 +534,66 @@ protected:
 	}
 
 	template <typename T, size_t ...Indexes>
-	void doDispatchQueuedEvent(T && item, IndexSequence<Indexes...>)
+	void doDispatchQueuedEvent(T && item, IndexSequence<Indexes...>, const BufferedItemList * batch = nullptr)
+	{
+		try {
+			if(item.resultState) {
+				doDispatchQueuedResult(item, IndexSequence<Indexes...>());
+			}
+			else {
+				this->directDispatch(item.event, std::get<Indexes>(item.arguments)...);
+			}
+		}
+		catch(...) {
+			// Ordinary enqueue exceptions still propagate. Abandoned batch futures
+			// must complete even when a peek copy keeps their shared state alive.
+			doCancelBatch(batch);
+			throw;
+		}
+	}
+
+	template <typename T, size_t ...Indexes, typename R = ReturnType>
+	typename std::enable_if<CanCollectReturn<R>::value, void>::type
+	doDispatchQueuedResult(T & item, IndexSequence<Indexes...>)
+	{
+		auto state = item.resultState;
+		if(state->started.exchange(true)) { return; }
+		auto promise = std::move(state->promise);
+		try {
+			promise->set_value(this->directDispatchWithResults(item.event, std::get<Indexes>(item.arguments)...));
+		}
+		catch(...) {
+			promise->set_exception(std::current_exception());
+		}
+	}
+
+	template <typename T, size_t ...Indexes, typename R = ReturnType>
+	typename std::enable_if<! CanCollectReturn<R>::value, void>::type
+	doDispatchQueuedResult(T & item, IndexSequence<Indexes...>)
 	{
 		this->directDispatch(item.event, std::get<Indexes>(item.arguments)...);
 	}
 
 	template <typename F, typename T, size_t ...Indexes>
-	bool doInvokeFuncWithQueuedEvent(F && func, T && item, IndexSequence<Indexes...>) const
+	bool doInvokeFuncWithQueuedEvent(F && func, T && item, IndexSequence<Indexes...>,
+		const BufferedItemList * batch = nullptr) const
 	{
-		return doInvokeFuncWithQueuedEventHelper(std::forward<F>(func), std::get<Indexes>(item.arguments)...);
+		try {
+			return doInvokeFuncWithQueuedEventHelper(std::forward<F>(func), std::get<Indexes>(item.arguments)...);
+		}
+		catch(...) {
+			doCancelBatch(batch);
+			throw;
+		}
+	}
+
+	static void doCancelBatch(const BufferedItemList * batch) noexcept
+	{
+		if(batch) {
+			for(const auto & pending : *batch) {
+				if(! pending.empty() && pending.get().resultState) { pending.get().resultState->cancel(); }
+			}
+		}
 	}
 	
 	template <typename F>
@@ -523,8 +635,8 @@ protected:
 
 private:
 	mutable ConditionVariable queueListConditionVariable;
-	typename Threading::template Atomic<int> queueEmptyCounter;
-	typename Threading::template Atomic<int> queueNotifyCounter;
+	typename Threading::template Atomic<int> queueEmptyCounter {0};
+	typename Threading::template Atomic<int> queueNotifyCounter {0};
 	mutable Mutex queueListMutex;
 	BufferedItemList queueList;
 	Mutex freeListMutex;
@@ -558,4 +670,3 @@ public:
 
 
 #endif
-

@@ -26,6 +26,7 @@ All functions in EventDispatcher are also available in EventQueue.
 Listener metadata and per-event selection/ordering are supported. See
 [listener ordering and argument plans](listener_ordering.md) for the API, C++11 examples,
 individual callback arguments, and snapshot semantics.
+Metadata can be replaced without reconnecting a listener using `setListenerMetadata`.
 
 Non-void handler returns can be collected with `dispatchWithResults` and combined by
 a per-event aggregator. See [handler results](return_results.md).

@@ -278,6 +278,22 @@ private:
 	}
 
 public:
+	bool setListenerMetadata(const Handle & handle, const ListenerMetadata & metadata)
+	{
+		auto stored = std::make_shared<const ListenerMetadata>(metadata);
+		std::lock_guard<Mutex> lockGuard(mutex);
+		auto node = handle.lock();
+		if(! node) { return false; }
+		// Walk this list rather than reading links of a potentially foreign node.
+		for(auto member = head; member; member = member->next) {
+			if(member == node) {
+				stored.swap(member->metadata);
+				return true;
+			}
+		}
+		return false;
+	}
+
 	bool remove(const Handle & handle)
 	{
 		// Disable this assertion because it's too slow in debug mode.

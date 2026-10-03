@@ -124,9 +124,10 @@ storage. It must not retain references to the input vector or rely on them after
 `EventQueue` inherits the synchronous `dispatchWithResults` API. It immediately invokes
 listeners and returns the vectors and aggregate, without enqueueing an event.
 
-Ordinary `dispatch`, `enqueue` and queue `process` methods keep their existing behavior:
-handler returns are discarded and result aggregators are not run. Retrieving results from
-queued work requires a separate completion mechanism and is not part of this API.
+For queued work, [enqueueWithResults](queue_results.md) returns a `std::future<DispatchResult>`.
+The queue's process methods collect and aggregate returns for those events and complete
+the future. Events submitted with ordinary `enqueue` still discard returns and do not run
+result aggregators. Ordinary synchronous `dispatch` also keeps that behavior.
 
 Collection allocates the two result vectors and, when configured, storage for the aggregate.
 Ordinary dispatch does not allocate these vectors or look up aggregator configuration.

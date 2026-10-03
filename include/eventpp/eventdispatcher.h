@@ -363,6 +363,12 @@ public:
 		}
 	}
 
+	bool setListenerMetadata(const Event & event, const Handle & handle, const ListenerMetadata & metadata)
+	{
+		auto listeners = doFindCallableList(event);
+		return listeners && listeners->setListenerMetadata(handle, metadata);
+	}
+
 	bool removeListener(const Event & event, const Handle handle)
 	{
 		CallbackList_ * callableList = doFindCallableList(event);

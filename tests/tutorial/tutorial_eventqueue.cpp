@@ -20,6 +20,28 @@
 #include <iostream>
 #include <thread>
 
+TEST_CASE("EventQueue tutorial, future results and updated listener metadata")
+{
+	struct Policies {
+		using ListenerMetadata = std::map<std::string, int>;
+	};
+	using Queue = eventpp::EventQueue<int, int(int), Policies>;
+	Queue queue;
+	auto handle = queue.appendListener(1, [](int n) { return n; }, {{"factor", 1}});
+	queue.setListenerPlanner(1, [](const Queue::ListenerList & listeners, const int & n) {
+		Queue::ListenerPlan plan;
+		plan.add(listeners[0].handle, n * listeners[0].metadata.at("factor"));
+		return plan;
+	});
+	queue.setResultAggregator(1, [](const std::vector<int> & values) { return values[0]; });
+	auto future = queue.enqueueWithResults(1, 7);
+	REQUIRE(queue.setListenerMetadata(1, handle, {{"factor", 2}}));
+	queue.process();
+	auto result = future.get();
+	REQUIRE(result.results == std::vector<int> {14});
+	REQUIRE(*result.aggregate == 14);
+}
+
 namespace {
 
 TEST_CASE("EventQueue tutorial 1, basic")

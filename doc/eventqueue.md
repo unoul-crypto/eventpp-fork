@@ -22,6 +22,9 @@ EventQueue is equivalent to the event system (QEvent) in Qt, or the message proc
 
 For basic functions such as add/remove listeners, please refer to the [EventDispatcher document](eventdispatcher.md).
 
+For queued handler returns and aggregation, see [enqueueWithResults](queue_results.md).
+Listener metadata can be changed with the inherited `setListenerMetadata` method.
+
 <a id="a2_2"></a>
 ## API reference
 

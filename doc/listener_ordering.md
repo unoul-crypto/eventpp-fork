@@ -29,6 +29,7 @@ Handle appendListener(const Event &, const Callback &, const ListenerMetadata &)
 Handle prependListener(const Event &, const Callback &, const ListenerMetadata &);
 Handle insertListener(const Event &, const Callback &, const Handle & before,
                       const ListenerMetadata &);
+bool setListenerMetadata(const Event &, const Handle &, const ListenerMetadata &);
 void setListenerOrdering(const Event &, const ListenerOrdering &);
 void clearListenerOrdering(const Event &);
 void setListenerPlanner(const Event &, const ListenerPlanner &);
@@ -36,10 +37,22 @@ void clearListenerPlanner(const Event &);
 ```
 
 The existing overloads without metadata remain available. Supplied metadata is copied
-at registration and is not subsequently changed by the library. Registrations without
+at registration and can be replaced explicitly with `setListenerMetadata`. Registrations without
 metadata do not allocate metadata storage; their snapshot records contain a default value.
 The corresponding `CallbackList::append`, `prepend`, and `insert` overloads also accept
 metadata, which is preserved when a callback list is copied.
+
+`setListenerMetadata(event, handle, metadata)` replaces the complete metadata value
+without changing the subscription's handle or its list position. It returns false for
+an invalid, removed, expired or foreign handle, or a handle belonging to a different event.
+Copying the new metadata can throw; the previous value remains intact on copy failure.
+Standalone `CallbackList` provides `setListenerMetadata(handle, metadata)`.
+
+Replacement is synchronized with snapshot creation. A selection function continues to
+see its original snapshot even if it updates metadata during its execution. Later and
+nested dispatches see the replacement. Metadata updates on one copy of a dispatcher do
+not affect another copy. Pointer values inside application metadata retain ordinary shared
+ownership semantics; replacement is not a deep copy of pointed-to objects.
 
 Setting an empty ordering function is equivalent to clearing it. Ordering can be set
 before listeners are registered. A returned empty order skips all listeners for that
@@ -199,3 +212,4 @@ returned handles, plus the application ordering function and callbacks.
 A plan has the same validation cost. Entries using original arguments allocate no argument
 storage; each entry with replacements allocates owned storage for its tuple. Planner support
 adds no fields to callback nodes and does not create plans when ordinary ordering is used.
+Updating metadata copies the supplied value and checks handle membership in `O(N)` time.

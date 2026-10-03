@@ -27,6 +27,7 @@ Listener metadata and per-event selection/ordering are supported. See
 [listener ordering and argument plans](listener_ordering.md) for the API, C++11 examples,
 individual callback arguments, and snapshot semantics.
 Metadata can be replaced without reconnecting a listener using `setListenerMetadata`.
+Use `getListenerMetadata(event, handle, output)` to read a copy of its current metadata.
 
 Non-void handler returns can be collected with `dispatchWithResults` and combined by
 a per-event aggregator. See [handler results](return_results.md).

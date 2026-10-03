@@ -24,6 +24,7 @@ For basic functions such as add/remove listeners, please refer to the [EventDisp
 
 For queued handler returns and aggregation, see [enqueueWithResults](queue_results.md).
 Listener metadata can be changed with the inherited `setListenerMetadata` method.
+The inherited `getListenerMetadata(event, handle, output)` method reads its current value.
 
 <a id="a2_2"></a>
 ## API reference

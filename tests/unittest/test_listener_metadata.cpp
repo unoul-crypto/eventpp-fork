@@ -3,6 +3,7 @@
 #include "eventpp/eventqueue.h"
 
 #include <atomic>
+#include <functional>
 #include <thread>
 #include <stdexcept>
 
@@ -26,6 +27,117 @@ bool ThrowingMetadata::throwOnCopy = false;
 struct ThrowPolicies {
 	using ListenerMetadata = ThrowingMetadata;
 };
+
+struct AssignableMetadata {
+	int value = 0;
+	std::function<void()> onAssign;
+	AssignableMetadata & operator = (const AssignableMetadata & other) {
+		if(onAssign) { onAssign(); }
+		value = other.value;
+		return *this;
+	}
+};
+struct AssignPolicies {
+	using ListenerMetadata = AssignableMetadata;
+};
+}
+
+TEST_CASE("Listener metadata, getters return independent copies and default values")
+{
+	using ED = eventpp::EventDispatcher<int, void()>;
+	ED dispatcher;
+	auto handle = dispatcher.appendListener(1, [] {}, {{"name", "original"}});
+	const ED & view = dispatcher;
+	ED::ListenerMetadata metadata;
+	REQUIRE(view.getListenerMetadata(1, handle, metadata));
+	REQUIRE(metadata.at("name") == "original");
+	metadata["name"] = "local";
+	REQUIRE(view.getListenerMetadata(1, handle, metadata));
+	REQUIRE(metadata.at("name") == "original");
+	REQUIRE(dispatcher.setListenerMetadata(1, handle, {{"name", "updated"}}));
+	REQUIRE(view.getListenerMetadata(1, handle, metadata));
+	REQUIRE(metadata.at("name") == "updated");
+	auto emptyHandle = dispatcher.appendListener(1, [] {});
+	REQUIRE(view.getListenerMetadata(1, emptyHandle, metadata));
+	REQUIRE(metadata.empty());
+
+	eventpp::EventQueue<int, void(), MetadataPolicies> queue;
+	auto queueHandle = queue.appendListener(1, [] {}, {{"value", 7}});
+	const auto & queueView = queue;
+	Dispatcher::ListenerMetadata custom;
+	REQUIRE(queueView.getListenerMetadata(1, queueHandle, custom));
+	REQUIRE(custom.at("value") == 7);
+
+	eventpp::CallbackList<void(), MetadataPolicies> list;
+	auto listHandle = list.append([] {}, {{"value", 8}});
+	const auto & listView = list;
+	REQUIRE(listView.getListenerMetadata(listHandle, custom));
+	REQUIRE(custom.at("value") == 8);
+}
+
+TEST_CASE("Listener metadata, failed getters leave the output unchanged")
+{
+	Dispatcher dispatcher, other;
+	auto handle = dispatcher.appendListener(1, [](int n) { return n; });
+	auto foreign = other.appendListener(1, [](int n) { return n; });
+	dispatcher.appendListener(2, [](int n) { return n; });
+	Dispatcher::ListenerMetadata metadata {{"keep", 42}};
+	REQUIRE_FALSE(dispatcher.getListenerMetadata(1, {}, metadata));
+	REQUIRE_FALSE(dispatcher.getListenerMetadata(1, foreign, metadata));
+	REQUIRE_FALSE(dispatcher.getListenerMetadata(2, handle, metadata));
+	REQUIRE_FALSE(dispatcher.getListenerMetadata(999, handle, metadata));
+	REQUIRE(metadata == Dispatcher::ListenerMetadata {{"keep", 42}});
+	auto pinned = handle.lock();
+	REQUIRE(dispatcher.removeListener(1, handle));
+	REQUIRE_FALSE(dispatcher.getListenerMetadata(1, handle, metadata));
+	pinned.reset();
+	REQUIRE_FALSE(dispatcher.getListenerMetadata(1, handle, metadata));
+	REQUIRE(metadata == Dispatcher::ListenerMetadata {{"keep", 42}});
+
+	eventpp::CallbackList<void(), MetadataPolicies> list, otherList;
+	auto listHandle = list.append([] {}, {{"value", 1}});
+	REQUIRE_FALSE(otherList.getListenerMetadata(listHandle, metadata));
+	REQUIRE(metadata == Dispatcher::ListenerMetadata {{"keep", 42}});
+}
+
+TEST_CASE("Listener metadata, getters see updates made during a dispatch snapshot")
+{
+	Dispatcher dispatcher;
+	auto handle = dispatcher.appendListener(1, [](int n) { return n; }, {{"value", 1}});
+	dispatcher.setListenerPlanner(1, [&](const Dispatcher::ListenerList & listeners, const int &) {
+		REQUIRE(dispatcher.setListenerMetadata(1, handle, {{"value", 2}}));
+		Dispatcher::ListenerMetadata metadata;
+		REQUIRE(dispatcher.getListenerMetadata(1, handle, metadata));
+		REQUIRE(metadata.at("value") == 2);
+		REQUIRE(listeners[0].metadata.at("value") == 1);
+		return Dispatcher::ListenerPlan();
+	});
+	dispatcher.dispatch(1, 0);
+}
+
+TEST_CASE("Listener metadata, getter assignment can reenter and exceptions preserve stored metadata")
+{
+	using ED = eventpp::EventDispatcher<int, void(), AssignPolicies>;
+	ED dispatcher;
+	AssignableMetadata initial;
+	initial.value = 1;
+	auto handle = dispatcher.appendListener(1, [] {}, initial);
+	AssignableMetadata output;
+	output.onAssign = [&] {
+		AssignableMetadata replacement;
+		replacement.value = 2;
+		REQUIRE(dispatcher.setListenerMetadata(1, handle, replacement));
+	};
+	REQUIRE(dispatcher.getListenerMetadata(1, handle, output));
+	REQUIRE(output.value == 1);
+	output.onAssign = [] { throw std::runtime_error("metadata assignment failed"); };
+	REQUIRE_THROWS_AS(dispatcher.getListenerMetadata(1, handle, output), std::runtime_error);
+	output.onAssign = nullptr;
+	REQUIRE(dispatcher.getListenerMetadata(1, handle, output));
+	REQUIRE(output.value == 2);
+	REQUIRE(dispatcher.removeListener(1, handle));
+	output.onAssign = [] { throw std::runtime_error("must not assign for a removed listener"); };
+	REQUIRE_FALSE(dispatcher.getListenerMetadata(1, handle, output));
 }
 
 TEST_CASE("Listener metadata, updates replace values and preserve subscription identity")
@@ -142,7 +254,12 @@ TEST_CASE("Listener metadata, concurrent updates produce consistent snapshots")
 		}
 	});
 	std::thread reader([&] {
-		for(int n = 0; n < 500; ++n) { dispatcher.dispatch(1, n); }
+		for(int n = 0; n < 500; ++n) {
+			dispatcher.dispatch(1, n);
+			Dispatcher::ListenerMetadata metadata;
+			if(! dispatcher.getListenerMetadata(1, handle, metadata)
+				|| metadata.at("a") != metadata.at("b")) { failed = true; }
+		}
 	});
 	writer.join();
 	reader.join();

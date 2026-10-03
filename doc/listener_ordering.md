@@ -30,6 +30,7 @@ Handle prependListener(const Event &, const Callback &, const ListenerMetadata &
 Handle insertListener(const Event &, const Callback &, const Handle & before,
                       const ListenerMetadata &);
 bool setListenerMetadata(const Event &, const Handle &, const ListenerMetadata &);
+bool getListenerMetadata(const Event &, const Handle &, ListenerMetadata & output) const;
 void setListenerOrdering(const Event &, const ListenerOrdering &);
 void clearListenerOrdering(const Event &);
 void setListenerPlanner(const Event &, const ListenerPlanner &);
@@ -48,11 +49,36 @@ an invalid, removed, expired or foreign handle, or a handle belonging to a diffe
 Copying the new metadata can throw; the previous value remains intact on copy failure.
 Standalone `CallbackList` provides `setListenerMetadata(handle, metadata)`.
 
+`getListenerMetadata(event, handle, output)` copies the current metadata into `output`.
+It returns false for the same invalid handles as the setter or for a missing event,
+leaving `output` unchanged. A listener registered without metadata returns a
+default-constructed metadata value and true. The returned value is independent of
+the stored metadata; changing it does not update the listener. Use the setter to save
+changes. `EventQueue` inherits this method, and standalone `CallbackList` provides
+`getListenerMetadata(handle, output) const`.
+
+```cpp
+Dispatcher::ListenerMetadata metadata;
+if(dispatcher.getListenerMetadata(event, handle, metadata)) {
+    metadata["priority"] = "10"; // With the default dictionary type.
+    dispatcher.setListenerMetadata(event, handle, metadata);
+}
+```
+
+Reading captures the stored value under the list mutex, then assigns it to `output`
+outside the mutex. Concurrent replacement or removal does not invalidate that copy.
+The getter requires copy-assignable metadata; construction or assignment exceptions
+propagate without changing the stored value. If assignment throws, the state of
+`output` follows the metadata type's assignment guarantee. Reading and then updating
+is two separate operations, so concurrent updates may overwrite one another.
+
 Replacement is synchronized with snapshot creation. A selection function continues to
 see its original snapshot even if it updates metadata during its execution. Later and
 nested dispatches see the replacement. Metadata updates on one copy of a dispatcher do
 not affect another copy. Pointer values inside application metadata retain ordinary shared
 ownership semantics; replacement is not a deep copy of pointed-to objects.
+The getter reads the current stored value even when called from a selection function
+whose listener snapshot still contains an older value.
 
 Setting an empty ordering function is equivalent to clearing it. Ordering can be set
 before listeners are registered. A returned empty order skips all listeners for that
@@ -213,3 +239,4 @@ A plan has the same validation cost. Entries using original arguments allocate n
 storage; each entry with replacements allocates owned storage for its tuple. Planner support
 adds no fields to callback nodes and does not create plans when ordinary ordering is used.
 Updating metadata copies the supplied value and checks handle membership in `O(N)` time.
+Reading metadata also checks membership in `O(N)` time, followed by one assignment.

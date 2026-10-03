@@ -282,16 +282,30 @@ public:
 	{
 		auto stored = std::make_shared<const ListenerMetadata>(metadata);
 		std::lock_guard<Mutex> lockGuard(mutex);
-		auto node = handle.lock();
+		auto node = doFindMemberNode(handle);
 		if(! node) { return false; }
-		// Walk this list rather than reading links of a potentially foreign node.
-		for(auto member = head; member; member = member->next) {
-			if(member == node) {
-				stored.swap(member->metadata);
-				return true;
-			}
+		stored.swap(node->metadata);
+		return true;
+	}
+
+	bool getListenerMetadata(const Handle & handle, ListenerMetadata & metadata) const
+	{
+		std::shared_ptr<const ListenerMetadata> stored;
+		{
+			std::lock_guard<Mutex> lockGuard(mutex);
+			auto node = doFindMemberNode(handle);
+			if(! node) { return false; }
+			stored = node->metadata;
 		}
-		return false;
+		// Run application-defined assignment outside the list mutex.
+		if(stored) {
+			metadata = *stored;
+		}
+		else {
+			const ListenerMetadata empty;
+			metadata = empty;
+		}
+		return true;
 	}
 
 	bool remove(const Handle & handle)
@@ -393,6 +407,18 @@ public:
 private:
 	template <typename Event, typename Prototype, typename P, typename MixinRoot>
 	friend class EventDispatcherBase;
+
+	// The caller holds mutex. Only inspect links belonging to this list.
+	NodePtr doFindMemberNode(const Handle & handle) const
+	{
+		auto node = handle.lock();
+		if(node) {
+			for(auto member = head; member; member = member->next) {
+				if(member == node) { return member; }
+			}
+		}
+		return nullptr;
+	}
 
 	ListenerList doGetListeners() const
 	{

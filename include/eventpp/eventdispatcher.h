@@ -96,6 +96,18 @@ public:
 	using ListenerInfo = typename CallbackList_::ListenerInfo;
 	using ListenerList = typename CallbackList_::ListenerList;
 	using ListenerOrder = typename CallbackList_::ListenerOrder;
+	using ListenerResult = typename StoredListenerResult<ReturnType>::Type;
+	using ListenerResults = std::vector<ListenerResult>;
+	using AggregationResult = typename std::decay<typename SelectAggregationResult<Policies_,
+		HasTypeAggregationResult<Policies_>::value, ListenerResult>::Type>::type;
+	using ResultAggregator = std::function<AggregationResult(const ListenerResults &)>;
+
+	struct DispatchResult
+	{
+		ListenerResults results;
+		std::vector<Handle> handles;
+		std::unique_ptr<AggregationResult> aggregate;
+	};
 
 	class ListenerPlan
 	{
@@ -105,7 +117,8 @@ public:
 		struct ArgumentsBase
 		{
 			virtual ~ArgumentsBase() = default;
-			virtual bool invoke(const CallbackList_ & listeners, Callback & callback) = 0;
+			virtual bool invoke(const CallbackList_ & listeners, Callback & callback,
+				const Handle & handle, DispatchResult * results) = 0;
 		};
 
 		template <typename Tuple>
@@ -116,9 +129,10 @@ public:
 			{
 			}
 
-			bool invoke(const CallbackList_ & listeners, Callback & callback) override
+			bool invoke(const CallbackList_ & listeners, Callback & callback,
+				const Handle & handle, DispatchResult * results) override
 			{
-				return ThisType::doInvokePlannedArguments(listeners, callback, values,
+				return ThisType::doInvokePlannedArguments(listeners, callback, handle, results, values,
 					typename MakeIndexSequence<sizeof...(Args)>::Type());
 			}
 
@@ -185,12 +199,15 @@ private:
 	};
 	using OrderingMap = typename SelectMap<Event, std::shared_ptr<ListenerSelection>,
 		Policies_, HasTemplateMap<Policies_>::value>::Type;
+	using AggregatorMap = typename SelectMap<Event, std::shared_ptr<ResultAggregator>,
+		Policies_, HasTemplateMap<Policies_>::value>::Type;
 
 public:
 	EventDispatcherBase()
 		:
 			eventCallbackListMap(),
 			listenerOrderingMap(),
+			resultAggregatorMap(),
 			listenerMutex()
 	{
 	}
@@ -199,6 +216,7 @@ public:
 		:
 			eventCallbackListMap(other.eventCallbackListMap),
 			listenerOrderingMap(cloneOrderingMap(other.listenerOrderingMap)),
+			resultAggregatorMap(cloneAggregatorMap(other.resultAggregatorMap)),
 			listenerMutex()
 	{
 	}
@@ -207,6 +225,7 @@ public:
 		:
 			eventCallbackListMap(std::move(other.eventCallbackListMap)),
 			listenerOrderingMap(std::move(other.listenerOrderingMap)),
+			resultAggregatorMap(std::move(other.resultAggregatorMap)),
 			listenerMutex()
 	{
 	}
@@ -224,6 +243,7 @@ public:
 	{
 		eventCallbackListMap = std::move(other.eventCallbackListMap);
 		listenerOrderingMap = std::move(other.listenerOrderingMap);
+		resultAggregatorMap = std::move(other.resultAggregatorMap);
 		return *this;
 	}
 
@@ -232,6 +252,7 @@ public:
 		
 		swap(eventCallbackListMap, other.eventCallbackListMap);
 		swap(listenerOrderingMap, other.listenerOrderingMap);
+		swap(resultAggregatorMap, other.resultAggregatorMap);
 	}
 
 	Handle appendListener(const Event & event, const Callback & callback)
@@ -310,6 +331,34 @@ public:
 			if(it != listenerOrderingMap.end()) {
 				removed = std::move(it->second);
 				listenerOrderingMap.erase(it);
+			}
+		}
+	}
+
+	template <typename R = ReturnType>
+	typename std::enable_if<CanCollectReturn<R>::value && std::is_same<R, ReturnType>::value, void>::type
+	setResultAggregator(const Event & event, const ResultAggregator & aggregator)
+	{
+		if(! aggregator) {
+			clearResultAggregator(event);
+			return;
+		}
+		auto stored = std::make_shared<ResultAggregator>(aggregator);
+		{
+			std::lock_guard<Mutex> lockGuard(listenerMutex);
+			stored.swap(resultAggregatorMap[event]);
+		}
+	}
+
+	void clearResultAggregator(const Event & event)
+	{
+		std::shared_ptr<ResultAggregator> removed;
+		{
+			std::lock_guard<Mutex> lockGuard(listenerMutex);
+			auto it = resultAggregatorMap.find(event);
+			if(it != resultAggregatorMap.end()) {
+				removed = std::move(it->second);
+				resultAggregatorMap.erase(it);
 			}
 		}
 	}
@@ -395,6 +444,49 @@ public:
 	// Most used for internal purpose.
 	void directDispatch(const Event & e, Args ...args) const
 	{
+		doDispatch(e, nullptr, args...);
+	}
+
+	template <typename R = ReturnType>
+	typename std::enable_if<CanCollectReturn<R>::value && std::is_same<R, ReturnType>::value, DispatchResult>::type
+	dispatchWithResults(Args ...args) const
+	{
+		static_assert(ArgumentPassingMode::canIncludeEventType, "Event type should be included in dispatch arguments.");
+		using GetEvent = typename SelectGetEvent<Policies_, EventType_, HasFunctionGetEvent<Policies_, Args...>::value>::Type;
+		return directDispatchWithResults(GetEvent::getEvent(args...), std::forward<Args>(args)...);
+	}
+
+	template <typename T, typename R = ReturnType>
+	typename std::enable_if<CanCollectReturn<R>::value && std::is_same<R, ReturnType>::value, DispatchResult>::type
+	dispatchWithResults(T && first, Args ...args) const
+	{
+		static_assert(ArgumentPassingMode::canExcludeEventType, "Event type should not be included in callback arguments.");
+		using GetEvent = typename SelectGetEvent<Policies_, EventType_, HasFunctionGetEvent<Policies_, T &&, Args...>::value>::Type;
+		return directDispatchWithResults(GetEvent::getEvent(std::forward<T>(first), args...), std::forward<Args>(args)...);
+	}
+
+	template <typename R = ReturnType>
+	typename std::enable_if<CanCollectReturn<R>::value && std::is_same<R, ReturnType>::value, DispatchResult>::type
+	directDispatchWithResults(const Event & event, Args ...args) const
+	{
+		std::shared_ptr<ResultAggregator> aggregator;
+		{
+			std::lock_guard<Mutex> lockGuard(listenerMutex);
+			auto it = resultAggregatorMap.find(event);
+			if(it != resultAggregatorMap.end()) { aggregator = it->second; }
+		}
+		DispatchResult result;
+		doDispatch(event, &result, args...);
+		if(aggregator) {
+			result.aggregate.reset(new AggregationResult((*aggregator)(result.results)));
+		}
+		return result;
+	}
+
+private:
+	void doDispatch(const Event & e, DispatchResult * results,
+		typename std::add_lvalue_reference<Args>::type ...args) const
+	{
 		if(! internal_::ForEachMixins<MixinRoot, Mixins, DoMixinBeforeDispatch>::forEach(
 			this, typename std::add_lvalue_reference<Args>::type(args)...)) {
 			return;
@@ -423,14 +515,23 @@ public:
 					callableList->doInvokeSelected(listeners, plan.invocations,
 						[](const typename ListenerPlan::Invocation & call) -> const Handle & { return call.handle; },
 						[&](Callback & callback, typename ListenerPlan::Invocation & call) {
-							return call.arguments ? call.arguments->invoke(*callableList, callback)
-								: callableList->doInvokeCallback(callback, args...);
+							return call.arguments ? call.arguments->invoke(*callableList, callback, call.handle, results)
+								: doInvokeWithResults(*callableList, callback, call.handle, results, args...);
 						});
 				}
 				else {
 					const auto order = selection->ordering(listeners, args...);
-					callableList->doInvokeInOrder(listeners, order, args...);
+					callableList->doInvokeSelected(listeners, order,
+						[](const Handle & handle) -> const Handle & { return handle; },
+						[&](Callback & callback, const Handle & handle) {
+							return doInvokeWithResults(*callableList, callback, handle, results, args...);
+						});
 				}
+			}
+			else if(results) {
+				callableList->forEachIf([&](const Handle & handle, Callback & callback) {
+					return doInvokeWithResults(*callableList, callback, handle, results, args...);
+				});
 			}
 			else {
 				(*callableList)(std::forward<Args>(args)...);
@@ -450,11 +551,31 @@ protected:
 	}
 
 private:
+	template <typename R = ReturnType>
+	static typename std::enable_if<CanCollectReturn<R>::value, bool>::type
+	doInvokeWithResults(const CallbackList_ & listeners, Callback & callback, const Handle & handle,
+		DispatchResult * results, typename std::add_lvalue_reference<Args>::type ...args)
+	{
+		if(! results) { return listeners.doInvokeCallback(callback, args...); }
+		results->results.emplace_back(callback(args...));
+		results->handles.push_back(handle);
+		using Continue = typename CallbackList_::CanContinueInvoking;
+		return Continue::canContinueInvoking(args...);
+	}
+
+	template <typename R = ReturnType>
+	static typename std::enable_if<! CanCollectReturn<R>::value, bool>::type
+	doInvokeWithResults(const CallbackList_ & listeners, Callback & callback, const Handle &,
+		DispatchResult *, typename std::add_lvalue_reference<Args>::type ...args)
+	{
+		return listeners.doInvokeCallback(callback, args...);
+	}
+
 	template <typename Tuple, std::size_t ...Indices>
 	static bool doInvokePlannedArguments(const CallbackList_ & listeners, Callback & callback,
-		Tuple & arguments, IndexSequence<Indices...>)
+		const Handle & handle, DispatchResult * results, Tuple & arguments, IndexSequence<Indices...>)
 	{
-		return listeners.doInvokeCallback(callback, std::get<Indices>(arguments)...);
+		return doInvokeWithResults(listeners, callback, handle, results, std::get<Indices>(arguments)...);
 	}
 
 	void doSetListenerSelection(const Event & event, std::shared_ptr<ListenerSelection> stored)
@@ -462,6 +583,15 @@ private:
 		std::lock_guard<Mutex> lockGuard(listenerMutex);
 		stored.swap(listenerOrderingMap[event]);
 		// The stored argument is destroyed after the lock guard.
+	}
+
+	static AggregatorMap cloneAggregatorMap(const AggregatorMap & source)
+	{
+		AggregatorMap result;
+		for(const auto & item : source) {
+			result.emplace(item.first, std::make_shared<ResultAggregator>(*item.second));
+		}
+		return result;
 	}
 
 	static OrderingMap cloneOrderingMap(const OrderingMap & source)
@@ -509,6 +639,7 @@ private:
 private:
 	Map eventCallbackListMap;
 	OrderingMap listenerOrderingMap;
+	AggregatorMap resultAggregatorMap;
 	mutable Mutex listenerMutex;
 };
 

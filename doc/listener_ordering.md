@@ -1,5 +1,7 @@
 # Listener metadata and event ordering
 
+Selection and argument plans also work with [handler result collection](return_results.md).
+
 `EventDispatcher` and `EventQueue` support application-defined selection and ordering
 of listeners for each event. Existing registrations and dispatches keep their normal
 list order unless an ordering function or planner is set. The heterogeneous classes are unchanged.

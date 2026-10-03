@@ -3,6 +3,31 @@
 namespace internal_ {
 
 template <typename T>
+struct HasTypeAggregationResult
+{
+	template <typename C> static std::true_type test(typename C::AggregationResult *);
+	template <typename C> static std::false_type test(...);
+	enum { value = !! decltype(test<T>(0))() };
+};
+template <typename T, bool, typename Default> struct SelectAggregationResult { using Type = typename T::AggregationResult; };
+template <typename T, typename Default> struct SelectAggregationResult<T, false, Default> { using Type = Default; };
+
+// Keep ordinary void/non-ownable-return dispatchers usable without vector<void>
+// or an attempt to instantiate an abstract result value.
+struct NoListenerResult {};
+template <typename R>
+struct CanCollectReturn : std::integral_constant<bool,
+	! std::is_void<R>::value && std::is_constructible<typename std::decay<R>::type, R>::value>
+{
+};
+template <typename R>
+struct StoredListenerResult
+{
+	using Type = typename std::conditional<CanCollectReturn<R>::value,
+		typename std::decay<R>::type, NoListenerResult>::type;
+};
+
+template <typename T>
 struct HasTypeListenerMetadata
 {
 	template <typename C> static std::true_type test(typename C::ListenerMetadata *);

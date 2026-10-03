@@ -19,6 +19,22 @@
 
 #include <iostream>
 #include <algorithm>
+#include <numeric>
+
+TEST_CASE("EventDispatcher tutorial, collect and aggregate handler returns")
+{
+	using Dispatcher = eventpp::EventDispatcher<int, int(int)>;
+	Dispatcher dispatcher;
+	dispatcher.appendListener(1, [](int value) { return value + 1; });
+	dispatcher.appendListener(1, [](int value) { return value * 2; });
+	dispatcher.setResultAggregator(1, [](const std::vector<int> & values) {
+		return std::accumulate(values.begin(), values.end(), 0);
+	});
+	auto result = dispatcher.dispatchWithResults(1, 5);
+	REQUIRE(result.results == std::vector<int> {6, 10});
+	REQUIRE(result.handles.size() == 2);
+	REQUIRE(*result.aggregate == 16);
+}
 
 TEST_CASE("EventDispatcher tutorial, per-listener argument plans")
 {

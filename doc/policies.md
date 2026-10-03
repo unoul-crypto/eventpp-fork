@@ -10,6 +10,7 @@
   * [Type Mixins](#a3_3)
   * [Type Callback](#a3_4)
   * [Type ListenerMetadata](#listener-metadata)
+  * [Type AggregationResult](#aggregation-result)
   * [Type Threading](#a3_5)
   * [Type ArgumentPassingMode](#a3_6)
   * [Template Map](#a3_7)
@@ -155,6 +156,18 @@ It can be a dictionary with application-defined key/value types or a custom stru
 It must be default-constructible and copy-constructible. Listeners registered without
 metadata have default-constructed metadata in the ordering snapshot.
 See [listener ordering](listener_ordering.md) for details.
+
+<a id="aggregation-result"></a>
+### Type AggregationResult
+
+**Default value**: the handler return type with references and top-level qualifiers removed.
+**Apply**: EventDispatcher, EventQueue (homogeneous classes with collectable, non-void returns).
+
+Sets the value type returned by a per-event `ResultAggregator`. For example, handlers
+may return `int` while `using AggregationResult = std::string` produces a textual summary.
+The type must be a non-void movable or copyable value type. It does not need a default
+constructor. The collection result owns an optional aggregate through `std::unique_ptr`.
+See [handler results](return_results.md) for details.
 
 <a id="a3_5"></a>
 ### Type Threading

@@ -9,6 +9,7 @@
   * [Function canContinueInvoking](#a3_2)
   * [Type Mixins](#a3_3)
   * [Type Callback](#a3_4)
+  * [Type ListenerMetadata](#listener-metadata)
   * [Type Threading](#a3_5)
   * [Type ArgumentPassingMode](#a3_6)
   * [Template Map](#a3_7)
@@ -142,6 +143,18 @@ A mixin is used to inject code in the EventDispatcher/EventQueue inheritance hie
 **Apply**: CallbackList, EventDispatcher, EventQueue.
 
 `Callback` is the underlying storage type to hold the callback. Default is `std::function`.  
+
+<a id="listener-metadata"></a>
+### Type ListenerMetadata
+
+**Default value**: `using ListenerMetadata = std::map<std::string, std::string>`.
+**Apply**: CallbackList, EventDispatcher, EventQueue (homogeneous classes).
+
+The type stores optional per-listener data used by a custom event ordering function.
+It can be a dictionary with application-defined key/value types or a custom structure.
+It must be default-constructible and copy-constructible. Listeners registered without
+metadata have default-constructed metadata in the ordering snapshot.
+See [listener ordering](listener_ordering.md) for details.
 
 <a id="a3_5"></a>
 ### Type Threading

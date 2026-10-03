@@ -89,11 +89,24 @@ public:
 	using Callback = Callback_;
 	using Event = EventType_;
 	using Mutex = typename Threading::Mutex;
+	using ListenerMetadata = typename CallbackList_::ListenerMetadata;
+	using ListenerInfo = typename CallbackList_::ListenerInfo;
+	using ListenerList = typename CallbackList_::ListenerList;
+	using ListenerOrder = typename CallbackList_::ListenerOrder;
+	// Observe arguments without making copies or moving values away from listeners.
+	using ListenerOrdering = std::function<ListenerOrder(const ListenerList &,
+		typename std::add_lvalue_reference<typename std::add_const<
+			typename std::remove_reference<Args>::type>::type>::type...)>;
+
+private:
+	using OrderingMap = typename SelectMap<Event, std::shared_ptr<ListenerOrdering>,
+		Policies_, HasTemplateMap<Policies_>::value>::Type;
 
 public:
 	EventDispatcherBase()
 		:
 			eventCallbackListMap(),
+			listenerOrderingMap(),
 			listenerMutex()
 	{
 	}
@@ -101,6 +114,7 @@ public:
 	EventDispatcherBase(const EventDispatcherBase & other)
 		:
 			eventCallbackListMap(other.eventCallbackListMap),
+			listenerOrderingMap(cloneOrderingMap(other.listenerOrderingMap)),
 			listenerMutex()
 	{
 	}
@@ -108,19 +122,24 @@ public:
 	EventDispatcherBase(EventDispatcherBase && other) noexcept
 		:
 			eventCallbackListMap(std::move(other.eventCallbackListMap)),
+			listenerOrderingMap(std::move(other.listenerOrderingMap)),
 			listenerMutex()
 	{
 	}
 
 	EventDispatcherBase & operator = (const EventDispatcherBase & other)
 	{
-		eventCallbackListMap = other.eventCallbackListMap;
+		if(this != &other) {
+			EventDispatcherBase copied(other);
+			swap(copied);
+		}
 		return *this;
 	}
 
 	EventDispatcherBase & operator = (EventDispatcherBase && other) noexcept
 	{
 		eventCallbackListMap = std::move(other.eventCallbackListMap);
+		listenerOrderingMap = std::move(other.listenerOrderingMap);
 		return *this;
 	}
 
@@ -128,6 +147,7 @@ public:
 		using std::swap;
 		
 		swap(eventCallbackListMap, other.eventCallbackListMap);
+		swap(listenerOrderingMap, other.listenerOrderingMap);
 	}
 
 	Handle appendListener(const Event & event, const Callback & callback)
@@ -144,11 +164,56 @@ public:
 		return eventCallbackListMap[event].prepend(callback);
 	}
 
+	Handle appendListener(const Event & event, const Callback & callback, const ListenerMetadata & metadata)
+	{
+		std::lock_guard<Mutex> lockGuard(listenerMutex);
+		return eventCallbackListMap[event].append(callback, metadata);
+	}
+
+	Handle prependListener(const Event & event, const Callback & callback, const ListenerMetadata & metadata)
+	{
+		std::lock_guard<Mutex> lockGuard(listenerMutex);
+		return eventCallbackListMap[event].prepend(callback, metadata);
+	}
+
 	Handle insertListener(const Event & event, const Callback & callback, const Handle & before)
 	{
 		std::lock_guard<Mutex> lockGuard(listenerMutex);
 
 		return eventCallbackListMap[event].insert(callback, before);
+	}
+
+	Handle insertListener(const Event & event, const Callback & callback, const Handle & before,
+		const ListenerMetadata & metadata)
+	{
+		std::lock_guard<Mutex> lockGuard(listenerMutex);
+		return eventCallbackListMap[event].insert(callback, before, metadata);
+	}
+
+	void setListenerOrdering(const Event & event, const ListenerOrdering & ordering)
+	{
+		if(! ordering) {
+			clearListenerOrdering(event);
+			return;
+		}
+		auto stored = std::make_shared<ListenerOrdering>(ordering);
+		{
+			std::lock_guard<Mutex> lockGuard(listenerMutex);
+			stored.swap(listenerOrderingMap[event]);
+		}
+	}
+
+	void clearListenerOrdering(const Event & event)
+	{
+		std::shared_ptr<ListenerOrdering> removed;
+		{
+			std::lock_guard<Mutex> lockGuard(listenerMutex);
+			auto it = listenerOrderingMap.find(event);
+			if(it != listenerOrderingMap.end()) {
+				removed = std::move(it->second);
+				listenerOrderingMap.erase(it);
+			}
+		}
 	}
 
 	bool removeListener(const Event & event, const Handle handle)
@@ -237,9 +302,30 @@ public:
 			return;
 		}
 
-		const CallbackList_ * callableList = doFindCallableList(e);
+		const CallbackList_ * callableList = nullptr;
+		std::shared_ptr<ListenerOrdering> ordering;
+		{
+			std::lock_guard<Mutex> lockGuard(listenerMutex);
+			auto it = eventCallbackListMap.find(e);
+			if(it != eventCallbackListMap.end()) {
+				callableList = &it->second;
+			}
+			if(! listenerOrderingMap.empty()) {
+				auto orderIt = listenerOrderingMap.find(e);
+				if(orderIt != listenerOrderingMap.end()) {
+					ordering = orderIt->second;
+				}
+			}
+		}
 		if(callableList) {
-			(*callableList)(std::forward<Args>(args)...);
+			if(ordering) {
+				const auto listeners = callableList->doGetListeners();
+				const auto order = (*ordering)(listeners, args...);
+				callableList->doInvokeInOrder(listeners, order, args...);
+			}
+			else {
+				(*callableList)(std::forward<Args>(args)...);
+			}
 		}
 	}
 
@@ -255,6 +341,15 @@ protected:
 	}
 
 private:
+	static OrderingMap cloneOrderingMap(const OrderingMap & source)
+	{
+		OrderingMap result;
+		for(const auto & item : source) {
+			result.emplace(item.first, std::make_shared<ListenerOrdering>(*item.second));
+		}
+		return result;
+	}
+
 	// template helper to avoid code duplication in doFindCallableList
 	template <typename T>
 	static auto doFindCallableListHelper(T * self, const Event & e)
@@ -290,6 +385,7 @@ private:
 
 private:
 	Map eventCallbackListMap;
+	OrderingMap listenerOrderingMap;
 	mutable Mutex listenerMutex;
 };
 
@@ -325,4 +421,3 @@ public:
 
 
 #endif
-

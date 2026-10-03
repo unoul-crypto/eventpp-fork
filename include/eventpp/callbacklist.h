@@ -19,10 +19,14 @@
 #include <functional>
 #include <mutex>
 #include <cassert>
+#include <vector>
 
 namespace eventpp {
 
 namespace internal_ {
+
+template <typename Event, typename Prototype, typename Policies, typename MixinRoot>
+class EventDispatcherBase;
 
 template <
 	typename Prototype,
@@ -53,6 +57,7 @@ private:
 	using CanContinueInvoking = typename SelectCanContinueInvoking<
 		Policies, HasFunctionCanContinueInvoking<Policies, Args...>::value
 	>::Type;
+	using Metadata_ = typename SelectListenerMetadata<Policies, HasTypeListenerMetadata<Policies>::value>::Type;
 
 	struct Node;
 	using NodePtr = std::shared_ptr<Node>;
@@ -61,8 +66,9 @@ private:
 	{
 		using Counter = unsigned int;
 
-		Node(const Callback_ & callback, const Counter counter)
-			: callback(callback), counter(counter)
+		Node(const Callback_ & callback, const Counter counter,
+			const std::shared_ptr<const Metadata_> & metadata = nullptr)
+			: callback(callback), counter(counter), metadata(metadata)
 		{
 		}
 
@@ -70,6 +76,7 @@ private:
 		NodePtr next;
 		Callback_ callback;
 		Counter counter;
+		std::shared_ptr<const Metadata_> metadata;
 	};
 
 	class Handle_ : public std::weak_ptr<Node>
@@ -94,6 +101,15 @@ public:
 	using Callback = Callback_;
 	using Handle = Handle_;
 	using Mutex = typename Threading::Mutex;
+	using ListenerMetadata = Metadata_;
+
+	struct ListenerInfo
+	{
+		Handle handle;
+		ListenerMetadata metadata;
+	};
+	using ListenerList = std::vector<ListenerInfo>;
+	using ListenerOrder = std::vector<Handle>;
 
 public:
 	CallbackListBase() noexcept
@@ -170,7 +186,18 @@ public:
 
 	Handle append(const Callback & callback)
 	{
-		NodePtr node(doAllocateNode(callback));
+		return doAppend(callback, nullptr);
+	}
+
+	Handle append(const Callback & callback, const ListenerMetadata & metadata)
+	{
+		return doAppend(callback, std::make_shared<const ListenerMetadata>(metadata));
+	}
+
+private:
+	Handle doAppend(const Callback & callback, const std::shared_ptr<const ListenerMetadata> & metadata)
+	{
+		NodePtr node(doAllocateNode(callback, metadata));
 
 		std::lock_guard<Mutex> lockGuard(mutex);
 
@@ -187,9 +214,21 @@ public:
 		return Handle(node);
 	}
 
+public:
 	Handle prepend(const Callback & callback)
 	{
-		NodePtr node(doAllocateNode(callback));
+		return doPrepend(callback, nullptr);
+	}
+
+	Handle prepend(const Callback & callback, const ListenerMetadata & metadata)
+	{
+		return doPrepend(callback, std::make_shared<const ListenerMetadata>(metadata));
+	}
+
+private:
+	Handle doPrepend(const Callback & callback, const std::shared_ptr<const ListenerMetadata> & metadata)
+	{
+		NodePtr node(doAllocateNode(callback, metadata));
 
 		std::lock_guard<Mutex> lockGuard(mutex);
 
@@ -206,14 +245,27 @@ public:
 		return Handle(node);
 	}
 
+public:
 	Handle insert(const Callback & callback, const Handle & before)
+	{
+		return doInsertCallback(callback, before, nullptr);
+	}
+
+	Handle insert(const Callback & callback, const Handle & before, const ListenerMetadata & metadata)
+	{
+		return doInsertCallback(callback, before, std::make_shared<const ListenerMetadata>(metadata));
+	}
+
+private:
+	Handle doInsertCallback(const Callback & callback, const Handle & before,
+		const std::shared_ptr<const ListenerMetadata> & metadata)
 	{
 		// Disable this assertion because it's too slow in debug mode.
 		//assert(before.expired() || ownsHandle(before));
 
 		NodePtr beforeNode = before.lock();
 		if(beforeNode) {
-			NodePtr node(doAllocateNode(callback));
+			NodePtr node(doAllocateNode(callback, metadata));
 
 			std::lock_guard<Mutex> lockGuard(mutex);
 
@@ -222,9 +274,10 @@ public:
 			return Handle(node);
 		}
 
-		return append(callback);
+		return doAppend(callback, metadata);
 	}
 
+public:
 	bool remove(const Handle & handle)
 	{
 		// Disable this assertion because it's too slow in debug mode.
@@ -322,6 +375,52 @@ public:
 #endif
 
 private:
+	template <typename Event, typename Prototype, typename P, typename MixinRoot>
+	friend class EventDispatcherBase;
+
+	ListenerList doGetListeners() const
+	{
+		ListenerList listeners;
+		std::lock_guard<Mutex> lockGuard(mutex);
+		for(NodePtr node = head; node; node = node->next) {
+			listeners.push_back(ListenerInfo { Handle(node),
+				node->metadata ? *node->metadata : ListenerMetadata() });
+		}
+		return listeners;
+	}
+
+	void doInvokeInOrder(const ListenerList & listeners, const ListenerOrder & order,
+		typename std::add_lvalue_reference<Args>::type ...args) const
+	{
+		// Accept only handles in the snapshot, and invoke each subscription at most once.
+		using WeakNode = std::weak_ptr<Node>;
+		std::map<WeakNode, bool, std::owner_less<WeakNode> > remaining;
+		for(const auto & listener : listeners) {
+			remaining.emplace(listener.handle, true);
+		}
+		for(const auto & handle : order) {
+			auto it = remaining.find(handle);
+			if(it == remaining.end()) {
+				continue;
+			}
+			remaining.erase(it);
+			NodePtr node;
+			{
+				std::lock_guard<Mutex> lockGuard(mutex);
+				node = handle.lock();
+				if(node && node->counter == removedCounter) {
+					node.reset();
+				}
+			}
+			if(node) {
+				node->callback(args...);
+				if(! CanContinueInvoking::canContinueInvoking(args...)) {
+					return;
+				}
+			}
+		}
+	}
+
 	template <typename F>
 	bool doForEachIf(F && f) const
 	{
@@ -378,9 +477,10 @@ private:
 		}
 	}
 	
-	NodePtr doAllocateNode(const Callback & callback)
+	NodePtr doAllocateNode(const Callback & callback,
+		const std::shared_ptr<const ListenerMetadata> & metadata = nullptr)
 	{
-		return std::make_shared<Node>(callback, getNextCounter());
+		return std::make_shared<Node>(callback, getNextCounter(), metadata);
 	}
 	
 	void doFreeNode(NodePtr & node)
@@ -443,7 +543,7 @@ private:
 		NodePtr node;
 		const Counter counter = getNextCounter();
 		while(fromNode) {
-			const NodePtr nextNode(std::make_shared<Node>(fromNode->callback, counter));
+			const NodePtr nextNode(std::make_shared<Node>(fromNode->callback, counter, fromNode->metadata));
 
 			nextNode->previous = node;
 

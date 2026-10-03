@@ -18,6 +18,45 @@
 #include "tutorial.h"
 
 #include <iostream>
+#include <algorithm>
+
+TEST_CASE("EventDispatcher tutorial, listener metadata and custom ordering")
+{
+	struct Policies {
+		using ListenerMetadata = std::map<std::string, int>;
+	};
+	using Dispatcher = eventpp::EventDispatcher<int, void(int), Policies>;
+	Dispatcher dispatcher;
+	std::vector<int> calls;
+	dispatcher.appendListener(1, [&](int value) { calls.push_back(value + 1); },
+		{{"priority", 10}, {"minimum", 0}});
+	dispatcher.appendListener(1, [&](int value) { calls.push_back(value + 2); },
+		{{"priority", 20}, {"minimum", 5}});
+
+	dispatcher.setListenerOrdering(1, [](const Dispatcher::ListenerList & listeners, const int & value) {
+		Dispatcher::ListenerList selected;
+		for(const auto & listener : listeners) {
+			if(value >= listener.metadata.at("minimum")) {
+				selected.push_back(listener);
+			}
+		}
+		std::stable_sort(selected.begin(), selected.end(),
+			[](const Dispatcher::ListenerInfo & a, const Dispatcher::ListenerInfo & b) {
+				return a.metadata.at("priority") > b.metadata.at("priority");
+			});
+		Dispatcher::ListenerOrder order;
+		for(const auto & listener : selected) {
+			order.push_back(listener.handle);
+		}
+		return order;
+	});
+
+	dispatcher.dispatch(1, 7);
+	REQUIRE(calls == std::vector<int> {9, 8});
+	calls.clear();
+	dispatcher.dispatch(1, 3);
+	REQUIRE(calls == std::vector<int> {4});
+}
 
 TEST_CASE("EventDispatcher tutorial 1, basic")
 {
@@ -216,4 +255,3 @@ TEST_CASE("EventDispatcher tutorial 5, event filter")
 	dispatcher.dispatch(3, 1, "Hello");
 	dispatcher.dispatch(5, 2, "World");
 }
-

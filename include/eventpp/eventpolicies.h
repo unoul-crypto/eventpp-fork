@@ -21,6 +21,7 @@
 #include <map>
 #include <unordered_map>
 #include <list>
+#include <string>
 
 namespace eventpp {
 

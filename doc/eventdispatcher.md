@@ -23,6 +23,9 @@ EventDispatcher holds a map of `<EventType, CallbackList>` pairs. On dispatching
 
 All functions in EventDispatcher are also available in EventQueue.
 
+Listener metadata and per-event selection/ordering are supported. See
+[listener ordering](listener_ordering.md) for the API, a C++11 example, and snapshot semantics.
+
 <a id="a2_2"></a>
 ## API reference
 

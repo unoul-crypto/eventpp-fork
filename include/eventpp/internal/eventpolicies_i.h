@@ -3,6 +3,16 @@
 namespace internal_ {
 
 template <typename T>
+struct HasTypeListenerMetadata
+{
+	template <typename C> static std::true_type test(typename C::ListenerMetadata *);
+	template <typename C> static std::false_type test(...);
+	enum { value = !! decltype(test<T>(0))() };
+};
+template <typename T, bool> struct SelectListenerMetadata { using Type = typename T::ListenerMetadata; };
+template <typename T> struct SelectListenerMetadata<T, false> { using Type = std::map<std::string, std::string>; };
+
+template <typename T>
 struct HasTypeArgumentPassingMode
 {
 	template <typename C> static std::true_type test(typename C::ArgumentPassingMode *) ;

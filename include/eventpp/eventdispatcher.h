@@ -16,6 +16,9 @@
 
 #include "callbacklist.h"
 
+#include <memory>
+#include <tuple>
+
 namespace eventpp {
 
 namespace internal_ {
@@ -93,13 +96,94 @@ public:
 	using ListenerInfo = typename CallbackList_::ListenerInfo;
 	using ListenerList = typename CallbackList_::ListenerList;
 	using ListenerOrder = typename CallbackList_::ListenerOrder;
-	// Observe arguments without making copies or moving values away from listeners.
-	using ListenerOrdering = std::function<ListenerOrder(const ListenerList &,
+
+	class ListenerPlan
+	{
+	private:
+		friend ThisType;
+
+		struct ArgumentsBase
+		{
+			virtual ~ArgumentsBase() = default;
+			virtual bool invoke(const CallbackList_ & listeners, Callback & callback) = 0;
+		};
+
+		template <typename Tuple>
+		struct Arguments : ArgumentsBase
+		{
+			template <typename ...Values>
+			explicit Arguments(Values && ...values) : values(std::forward<Values>(values)...)
+			{
+			}
+
+			bool invoke(const CallbackList_ & listeners, Callback & callback) override
+			{
+				return ThisType::doInvokePlannedArguments(listeners, callback, values,
+					typename MakeIndexSequence<sizeof...(Args)>::Type());
+			}
+
+			Tuple values;
+		};
+
+		struct Invocation
+		{
+			explicit Invocation(const Handle & handle,
+				std::unique_ptr<ArgumentsBase> arguments = nullptr)
+				: handle(handle), arguments(std::move(arguments))
+			{
+			}
+
+			Handle handle;
+			std::unique_ptr<ArgumentsBase> arguments;
+		};
+
+	public:
+		ListenerPlan() = default;
+		ListenerPlan(ListenerPlan &&) noexcept = default;
+		ListenerPlan & operator = (ListenerPlan &&) noexcept = default;
+		ListenerPlan(const ListenerPlan &) = delete;
+		ListenerPlan & operator = (const ListenerPlan &) = delete;
+
+		void add(const Handle & handle)
+		{
+			invocations.emplace_back(handle);
+		}
+
+		template <typename ...Values>
+		typename std::enable_if<(sizeof...(Values) > 0), void>::type
+		add(const Handle & handle, Values && ...values)
+		{
+			static_assert(sizeof...(Values) == sizeof...(Args), "Replacement arguments must match the callback signature.");
+			using Tuple = std::tuple<typename std::decay<Args>::type...>;
+			static_assert(std::is_constructible<Tuple, Values &&...>::value,
+				"Replacement arguments must be convertible to the callback argument types.");
+			invocations.emplace_back(handle, std::unique_ptr<ArgumentsBase>(
+				new Arguments<Tuple>(std::forward<Values>(values)...)));
+		}
+
+		std::size_t size() const noexcept { return invocations.size(); }
+		bool empty() const noexcept { return invocations.empty(); }
+
+	private:
+		std::vector<Invocation> invocations;
+	};
+
+	// A selection function observes the original arguments without copying or moving them.
+	template <typename Result>
+	using ListenerSelectionFunction = std::function<Result(const ListenerList &,
 		typename std::add_lvalue_reference<typename std::add_const<
 			typename std::remove_reference<Args>::type>::type>::type...)>;
+	// Observe arguments without making copies or moving values away from listeners.
+	using ListenerOrdering = ListenerSelectionFunction<ListenerOrder>;
+	using ListenerPlanner = ListenerSelectionFunction<ListenerPlan>;
 
 private:
-	using OrderingMap = typename SelectMap<Event, std::shared_ptr<ListenerOrdering>,
+	struct ListenerSelection
+	{
+		ListenerOrdering ordering;
+		ListenerPlanner planner;
+	};
+	using OrderingMap = typename SelectMap<Event, std::shared_ptr<ListenerSelection>,
 		Policies_, HasTemplateMap<Policies_>::value>::Type;
 
 public:
@@ -196,16 +280,30 @@ public:
 			clearListenerOrdering(event);
 			return;
 		}
-		auto stored = std::make_shared<ListenerOrdering>(ordering);
-		{
-			std::lock_guard<Mutex> lockGuard(listenerMutex);
-			stored.swap(listenerOrderingMap[event]);
+		auto stored = std::make_shared<ListenerSelection>();
+		stored->ordering = ordering;
+		doSetListenerSelection(event, std::move(stored));
+	}
+
+	void setListenerPlanner(const Event & event, const ListenerPlanner & planner)
+	{
+		if(! planner) {
+			clearListenerPlanner(event);
+			return;
 		}
+		auto stored = std::make_shared<ListenerSelection>();
+		stored->planner = planner;
+		doSetListenerSelection(event, std::move(stored));
+	}
+
+	void clearListenerPlanner(const Event & event)
+	{
+		clearListenerOrdering(event);
 	}
 
 	void clearListenerOrdering(const Event & event)
 	{
-		std::shared_ptr<ListenerOrdering> removed;
+		std::shared_ptr<ListenerSelection> removed;
 		{
 			std::lock_guard<Mutex> lockGuard(listenerMutex);
 			auto it = listenerOrderingMap.find(event);
@@ -303,7 +401,7 @@ public:
 		}
 
 		const CallbackList_ * callableList = nullptr;
-		std::shared_ptr<ListenerOrdering> ordering;
+		std::shared_ptr<ListenerSelection> selection;
 		{
 			std::lock_guard<Mutex> lockGuard(listenerMutex);
 			auto it = eventCallbackListMap.find(e);
@@ -313,15 +411,26 @@ public:
 			if(! listenerOrderingMap.empty()) {
 				auto orderIt = listenerOrderingMap.find(e);
 				if(orderIt != listenerOrderingMap.end()) {
-					ordering = orderIt->second;
+					selection = orderIt->second;
 				}
 			}
 		}
 		if(callableList) {
-			if(ordering) {
+			if(selection) {
 				const auto listeners = callableList->doGetListeners();
-				const auto order = (*ordering)(listeners, args...);
-				callableList->doInvokeInOrder(listeners, order, args...);
+				if(selection->planner) {
+					auto plan = selection->planner(listeners, args...);
+					callableList->doInvokeSelected(listeners, plan.invocations,
+						[](const typename ListenerPlan::Invocation & call) -> const Handle & { return call.handle; },
+						[&](Callback & callback, typename ListenerPlan::Invocation & call) {
+							return call.arguments ? call.arguments->invoke(*callableList, callback)
+								: callableList->doInvokeCallback(callback, args...);
+						});
+				}
+				else {
+					const auto order = selection->ordering(listeners, args...);
+					callableList->doInvokeInOrder(listeners, order, args...);
+				}
 			}
 			else {
 				(*callableList)(std::forward<Args>(args)...);
@@ -341,11 +450,25 @@ protected:
 	}
 
 private:
+	template <typename Tuple, std::size_t ...Indices>
+	static bool doInvokePlannedArguments(const CallbackList_ & listeners, Callback & callback,
+		Tuple & arguments, IndexSequence<Indices...>)
+	{
+		return listeners.doInvokeCallback(callback, std::get<Indices>(arguments)...);
+	}
+
+	void doSetListenerSelection(const Event & event, std::shared_ptr<ListenerSelection> stored)
+	{
+		std::lock_guard<Mutex> lockGuard(listenerMutex);
+		stored.swap(listenerOrderingMap[event]);
+		// The stored argument is destroyed after the lock guard.
+	}
+
 	static OrderingMap cloneOrderingMap(const OrderingMap & source)
 	{
 		OrderingMap result;
 		for(const auto & item : source) {
-			result.emplace(item.first, std::make_shared<ListenerOrdering>(*item.second));
+			result.emplace(item.first, std::make_shared<ListenerSelection>(*item.second));
 		}
 		return result;
 	}

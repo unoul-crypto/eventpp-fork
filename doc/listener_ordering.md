@@ -2,7 +2,7 @@
 
 `EventDispatcher` and `EventQueue` support application-defined selection and ordering
 of listeners for each event. Existing registrations and dispatches keep their normal
-list order unless an ordering function is set. The heterogeneous classes are unchanged.
+list order unless an ordering function or planner is set. The heterogeneous classes are unchanged.
 
 ## API
 
@@ -14,6 +14,8 @@ The public types are:
 - `ListenerOrder`: `std::vector<Handle>` describing the listeners to invoke, in order.
 - `ListenerOrdering`: `std::function<ListenerOrder(const ListenerList &, const T &...)>`.
   Each `T` is the corresponding callback argument type with references removed.
+- `ListenerPlan`: a move-only plan containing handles and optional owned replacement arguments.
+- `ListenerPlanner`: `std::function<ListenerPlan(const ListenerList &, const T &...)>`.
 
 The dictionary type is chosen at compile time. For example, an application can use
 `std::unordered_map<std::string, int>` or its own value type. C++11 has no `std::any`;
@@ -27,6 +29,8 @@ Handle insertListener(const Event &, const Callback &, const Handle & before,
                       const ListenerMetadata &);
 void setListenerOrdering(const Event &, const ListenerOrdering &);
 void clearListenerOrdering(const Event &);
+void setListenerPlanner(const Event &, const ListenerPlanner &);
+void clearListenerPlanner(const Event &);
 ```
 
 The existing overloads without metadata remain available. Supplied metadata is copied
@@ -38,6 +42,66 @@ metadata, which is preserved when a callback list is copied.
 Setting an empty ordering function is equivalent to clearing it. Ordering can be set
 before listeners are registered. A returned empty order skips all listeners for that
 dispatch without removing any subscriptions.
+
+An event has one active selection function. `setListenerPlanner` replaces its ordering
+function, and `setListenerOrdering` replaces its planner. Both clear methods (and setting
+an empty function of either kind) restore normal list traversal.
+
+## Individual arguments with ListenerPlan
+
+A planner can select listeners, order them, and prepare a different complete argument
+list for each one. Its input snapshot and read-only event arguments are the same as for
+an ordering function. The existing `ListenerOrder` API remains available.
+
+```cpp
+using Dispatcher = eventpp::EventDispatcher<int, void(int, const std::string &)>;
+
+void configurePlan(Dispatcher & events) {
+    events.appendListener(1, [](int value, const std::string & text) { /* first */ });
+    events.appendListener(1, [](int value, const std::string & text) { /* second */ });
+
+    events.setListenerPlanner(1,
+        [](const Dispatcher::ListenerList & listeners,
+           const int & value, const std::string & text) {
+            Dispatcher::ListenerPlan plan;
+            plan.add(listeners[1].handle, value * 2, text + "!");
+            plan.add(listeners[0].handle);
+            return plan;
+        });
+
+    events.dispatch(1, 7, "hello");
+    // Second listener gets (14, "hello!"), then first gets (7, "hello").
+}
+```
+
+`plan.add(handle)` uses the original arguments without storing copies. Their reference
+semantics are preserved: changes made by an earlier callback to a shared original `T&`
+are visible to later callbacks that also use the original arguments. Non-copyable and
+abstract reference arguments work with this form.
+
+`plan.add(handle, values...)` stores its own `std::tuple<std::decay<Args>::type...>` for
+that invocation. Supply all arguments, with types convertible to the callback signature.
+Values are copied from lvalues or moved from rvalues when added. The planner's locals
+can then be destroyed safely; replacement values live until the plan is destroyed after
+dispatch, including when an exception unwinds it. Move-only replacements are supported
+when the callback signature can consume them, for example `std::unique_ptr<T>&`.
+
+A callback taking `T&` receives a reference to the stored replacement, rather than the
+original object. Changes do not affect other invocation tuples or the original argument.
+This is ordinary value ownership, not a deep copy: pointer and shared-pointer values may
+still refer to the same external object. Referenced replacement values must not be retained
+past dispatch. Replacement argument types must be storable as values; an abstract type
+cannot be stored this way.
+
+The plan provides `size()` and `empty()`. It can be moved and returned from a planner,
+but cannot be copied, ensuring its owned argument tuples are not shared between dispatches.
+For a callback without arguments, use `plan.add(handle)`.
+
+Omitting a handle skips that listener for this dispatch. Duplicate and invalid handles
+follow the same rules as `ListenerOrder`; only the first occurrence is considered.
+The `canContinueInvoking` policy receives the actual arguments used for each callback,
+including mutations to replacements. Returning false stops the entire dispatch, even if
+the original event object was not changed.
 
 ## C++11 example
 
@@ -88,11 +152,11 @@ void configure(Dispatcher & events) {
 
 1. Existing mixin filters run first. If they reject the event, ordering is not called.
 2. The dispatcher takes a snapshot of the event's listeners and their metadata.
-3. The ordering function receives that snapshot and read-only references to the callback
+3. The ordering function or planner receives that snapshot and read-only references to the callback
    arguments. The separate event key is not an extra argument; if the key is already
    part of the callback signature, it is included normally. Arguments reflect any changes
    made by mixin filters. These references and the snapshot are valid during this call.
-4. The selected listeners are invoked synchronously in the returned order. Callback
+4. The selected listeners are invoked synchronously in the returned order or plan. Callback
    arguments retain the original callback signature, including mutable references.
    The existing `canContinueInvoking` policy is checked after each invoked listener.
 
@@ -118,7 +182,7 @@ throws. The dispatcher remains usable, and ordinary listener exception behavior 
 then present, rather than at enqueue time. `dispatch`, `process`, `processOne`, `processIf`,
 and `processUntil` all use the same mechanism.
 
-Copying a dispatcher copies its ordering callable and listener metadata, with new listener
+Copying a dispatcher copies its ordering/planner callable and listener metadata, with new listener
 handles. Functions should choose handles from their supplied snapshot rather than capture
 handles from the original dispatcher. Moving/swapping transfers the configuration with
 the listeners.
@@ -130,3 +194,6 @@ or metadata copies. Each callback node has an additional shared pointer for opti
 metadata. With ordering enabled, snapshot creation copies each listener's metadata, and
 handle validation takes `O(N log N + M log N)` time for `N` snapshot listeners and `M`
 returned handles, plus the application ordering function and callbacks.
+A plan has the same validation cost. Entries using original arguments allocate no argument
+storage; each entry with replacements allocates owned storage for its tuple. Planner support
+adds no fields to callback nodes and does not create plans when ordinary ordering is used.

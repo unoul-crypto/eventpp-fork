@@ -392,13 +392,32 @@ private:
 	void doInvokeInOrder(const ListenerList & listeners, const ListenerOrder & order,
 		typename std::add_lvalue_reference<Args>::type ...args) const
 	{
+		doInvokeSelected(listeners, order,
+			[](const Handle & handle) -> const Handle & { return handle; },
+			[&](Callback & callback, const Handle &) {
+				return doInvokeCallback(callback, args...);
+			});
+	}
+
+	bool doInvokeCallback(Callback & callback,
+		typename std::add_lvalue_reference<Args>::type ...args) const
+	{
+		callback(args...);
+		return CanContinueInvoking::canContinueInvoking(args...);
+	}
+
+	template <typename Selection, typename GetHandle, typename Invoke>
+	void doInvokeSelected(const ListenerList & listeners, Selection & selection,
+		GetHandle && getHandle, Invoke && invoke) const
+	{
 		// Accept only handles in the snapshot, and invoke each subscription at most once.
 		using WeakNode = std::weak_ptr<Node>;
 		std::map<WeakNode, bool, std::owner_less<WeakNode> > remaining;
 		for(const auto & listener : listeners) {
 			remaining.emplace(listener.handle, true);
 		}
-		for(const auto & handle : order) {
+		for(auto & entry : selection) {
+			const Handle & handle = getHandle(entry);
 			auto it = remaining.find(handle);
 			if(it == remaining.end()) {
 				continue;
@@ -413,8 +432,7 @@ private:
 				}
 			}
 			if(node) {
-				node->callback(args...);
-				if(! CanContinueInvoking::canContinueInvoking(args...)) {
+				if(! invoke(node->callback, entry)) {
 					return;
 				}
 			}

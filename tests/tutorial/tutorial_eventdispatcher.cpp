@@ -20,6 +20,23 @@
 #include <iostream>
 #include <algorithm>
 
+TEST_CASE("EventDispatcher tutorial, per-listener argument plans")
+{
+	using Dispatcher = eventpp::EventDispatcher<int, void(int)>;
+	Dispatcher dispatcher;
+	std::vector<int> calls;
+	dispatcher.appendListener(1, [&](int value) { calls.push_back(value); });
+	dispatcher.appendListener(1, [&](int value) { calls.push_back(value); });
+	dispatcher.setListenerPlanner(1, [](const Dispatcher::ListenerList & listeners, const int & value) {
+		Dispatcher::ListenerPlan plan;
+		plan.add(listeners[1].handle, value * 2);
+		plan.add(listeners[0].handle);
+		return plan;
+	});
+	dispatcher.dispatch(1, 7);
+	REQUIRE(calls == std::vector<int> {14, 7});
+}
+
 TEST_CASE("EventDispatcher tutorial, listener metadata and custom ordering")
 {
 	struct Policies {

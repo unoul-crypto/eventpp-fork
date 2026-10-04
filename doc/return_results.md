@@ -130,4 +130,9 @@ the future. Events submitted with ordinary `enqueue` still discard returns and d
 result aggregators. Ordinary synchronous `dispatch` also keeps that behavior.
 
 Collection allocates the two result vectors and, when configured, storage for the aggregate.
+The vectors reserve a capacity hint from the current listener count, bounded by the
+returned selection/plan size when selection is enabled. This avoids repeated growth for
+full dispatches. The hint does not limit traversal or change subscription mutation rules;
+concurrent additions can still require vector growth. Removal, invalid handles or early
+cancellation can leave unused capacity in the returned vectors.
 Ordinary dispatch does not allocate these vectors or look up aggregator configuration.

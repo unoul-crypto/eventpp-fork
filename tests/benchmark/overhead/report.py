@@ -5,6 +5,85 @@ import json
 from pathlib import Path
 
 
+def optimization_report(environment, ns, record, output):
+    text = ["# Optimization of listener selection and result collection", "",
+            f"Measured on {environment['date_utc'][:10]}: {environment['platform']}, "
+            f"{environment['cpu']}, {environment['compiler'].removeprefix('compiler=')}, "
+            f"{environment['pointer_bits']}-bit Release, logical CPU {environment['logical_cpu']}.", "",
+            f"Before: fork `{environment['baseline']}`. After: the same header base with "
+            "the optimization patch "
+            f"(header diff SHA-256 `{environment['fork_header_diff_sha256']}`). "
+            "The extended workload is compiled for both binaries. "
+            f"Each reported time is the median of {environment['samples_per_case']} samples "
+            f"over {environment['rounds']} rounds with balanced execution order. "
+            "Timing uses the normal allocator; separate binaries count C++ heap allocations. "
+            "The workload and memory accounting follow the "
+            "[original comparison](fork_overhead.md#environment-and-method).", "",
+            "## Changes", "",
+            "- Reserve the listener snapshot once, avoiding repeated metadata copies when the vector grows.",
+            "- Replace per-listener validation tree nodes with one sorted array of weak owners and used flags. "
+            "Control-block identity, duplicate suppression and removed-listener checks are preserved.",
+            "- Reserve result and handle vector capacities from listener/selection size hints. "
+            "Nested and concurrent dispatches still own separate buffers; ordinary calls do not count "
+            "listeners or allocate result buffers.", "",
+            "## Eight listeners", "",
+            "Times are microseconds per event; allocations are C++ heap allocation calls per event. "
+            "The queue uses batches of 64 and includes future retrieval.", "",
+            "| Operation | Before, us | After, us | Speedup | Allocations before | Allocations after |",
+            "| --- | ---: | ---: | ---: | ---: | ---: |"]
+    cases = ("dispatch", "enqueue_process", "ordering", "ordering_metadata", "ordering_compact_metadata",
+             "plan_original", "plan_arguments", "plan_results", "results", "results_aggregate", "enqueue_results_process")
+    for case in cases:
+        old, new = ns("upstream", case, 8), ns("fork", case, 8)
+        before = record("upstream", "steady", case, 8)
+        after = record("fork", "steady", case, 8)
+        text.append(f"| `{case}` | {old / 1000:.3f} | {new / 1000:.3f} | {old / new:.2f}x | "
+                    f"{float(before['allocations_per_op']):.3f} | {float(after['allocations_per_op']):.3f} |")
+    text.extend(["", "## Scaling", "",
+                 "Each cell is before -> after in microseconds per event.", "",
+                 "| Listeners | Ordering, dictionary | Plan, replaced args | Result collection | Queue with futures |",
+                 "| ---: | ---: | ---: | ---: | ---: |"])
+    for count in (1, 8, 32, 128):
+        text.append(f"| {count} | " + " | ".join(
+            f"{ns('upstream', case, count) / 1000:.3f} -> {ns('fork', case, count) / 1000:.3f}"
+            for case in ("ordering_metadata", "plan_arguments", "results", "enqueue_results_process")) + " |")
+    sizes = ("callback_list_object", "dispatcher_object", "queue_object", "queued_event", "callback_node")
+    layouts_unchanged = all(record("upstream", "size", case, 0)["bytes_per_op"]
+                            == record("fork", "size", case, 0)["bytes_per_op"] for case in sizes)
+    text.extend(["", "## Memory and limits", "",
+                 ("The five measured object layout sizes are unchanged. " if layouts_unchanged else
+                  "Object layout changes are recorded in the saved summary CSV. ") +
+                 "The following rows measure eight-listener steady-state calls. "
+                 "Requested totals exclude allocator bookkeeping; peaks exclude preexisting setup storage.", "",
+                 "| Operation | Requested bytes before -> after | New live peak before -> after, bytes |",
+                 "| --- | ---: | ---: |"])
+    for case in ("ordering", "ordering_metadata", "plan_arguments", "results", "enqueue_results_process"):
+        before, after = (record(variant, "steady", case, 8) for variant in ("upstream", "fork"))
+        text.append(f"| `{case}` | {float(before['bytes_per_op']):.1f} -> {float(after['bytes_per_op']):.1f} | "
+                    f"{before['peak_bytes']} -> {after['peak_bytes']} |")
+    text.extend(["", "Reserving results introduces an extra count traversal for ordinary collection. "
+                 "A result vector can retain unused capacity when callbacks are removed, selected handles "
+                 "are invalid or invocation stops early. The full-dispatch benchmark does not measure "
+                 "those cases. Timing improvements for tiny counts can be small or overlap sample noise; "
+                 "saved min/max values accompany every median. This is a one-thread microbenchmark with "
+                 "small handlers, not a measurement of contention or application throughput.", "",
+                 "Run the project's unit tests and tutorials separately to validate correctness. "
+                 "Coverage includes nested dispatch, concurrent configuration, "
+                 "snapshot stability, mutations during callbacks, duplicate and foreign handles, "
+                 "move-only results, cancellation and exceptions. Added regression cases verify distinct "
+                 "owners of the same node address and subscription mutation during result collection.", "",
+                 "## Reproduce", "", "```sh",
+                 f"python tests/benchmark/overhead/run.py --baseline {environment['baseline'][:7]} --baseline-features --build-dir build/overhead-optimized",
+                 "python tests/benchmark/overhead/report.py build/overhead-optimized build/overhead-optimized/report.md",
+                 "```", "",
+                 "Saved measurements: [summary CSV](benchmark_results/optimization_summary.csv), "
+                 "[environment](benchmark_results/optimization_environment.json). "
+                 "Raw allocation and timing samples remain in the chosen build directory. "
+                 "The `upstream` CSV label denotes the pre-optimization fork in this comparison.", ""])
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text("\n".join(text), encoding="utf-8")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("results", type=Path, help="Directory containing summary.csv and environment.json")
@@ -21,8 +100,15 @@ def main():
     def ns(variant, scenario, count):
         return float(record(variant, "timing", scenario, count)["median_ns"])
 
+    if environment.get("baseline_has_fork_api"):
+        optimization_report(environment, ns, record, args.output)
+        return
+
     text = ["# Fork overhead versus upstream", "",
             "Generated from saved measurements by `tests/benchmark/overhead/report.py`.", "",
+            "For the later snapshot, validation and result-vector changes, see "
+            "[optimization results](optimization_results.md). Check the header revision below "
+            "to identify which library state these measurements cover.", "",
             "## Environment and method", "",
             f"Measured on {environment['date_utc'][:10]}: {environment['platform']}, "
             f"{environment['cpu']}, {environment['compiler'].removeprefix('compiler=')}, "

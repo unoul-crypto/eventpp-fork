@@ -524,6 +524,7 @@ private:
 				const auto listeners = callableList->doGetListeners();
 				if(selection->planner) {
 					auto plan = selection->planner(listeners, args...);
+					doReserveResults(results, (std::min)(listeners.size(), plan.size()));
 					callableList->doInvokeSelected(listeners, plan.invocations,
 						[](const typename ListenerPlan::Invocation & call) -> const Handle & { return call.handle; },
 						[&](Callback & callback, typename ListenerPlan::Invocation & call) {
@@ -533,6 +534,7 @@ private:
 				}
 				else {
 					const auto order = selection->ordering(listeners, args...);
+					doReserveResults(results, (std::min)(listeners.size(), order.size()));
 					callableList->doInvokeSelected(listeners, order,
 						[](const Handle & handle) -> const Handle & { return handle; },
 						[&](Callback & callback, const Handle & handle) {
@@ -541,6 +543,8 @@ private:
 				}
 			}
 			else if(results) {
+				// A capacity hint only: traversal retains its normal mutation semantics.
+				doReserveResults(results, callableList->doCountListeners());
 				callableList->forEachIf([&](const Handle & handle, Callback & callback) {
 					return doInvokeWithResults(*callableList, callback, handle, results, args...);
 				});
@@ -563,6 +567,14 @@ protected:
 	}
 
 private:
+	static void doReserveResults(DispatchResult * results, std::size_t count)
+	{
+		if(results) {
+			results->results.reserve(count);
+			results->handles.reserve(count);
+		}
+	}
+
 	template <typename R = ReturnType>
 	static typename std::enable_if<CanCollectReturn<R>::value, bool>::type
 	doInvokeWithResults(const CallbackList_ & listeners, Callback & callback, const Handle & handle,

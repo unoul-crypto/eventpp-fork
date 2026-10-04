@@ -20,6 +20,8 @@
 #include <mutex>
 #include <cassert>
 #include <vector>
+#include <algorithm>
+#include <utility>
 
 namespace eventpp {
 
@@ -424,11 +426,27 @@ private:
 	{
 		ListenerList listeners;
 		std::lock_guard<Mutex> lockGuard(mutex);
+		// Reserve once: growing the vector can repeatedly copy application metadata.
+		listeners.reserve(doCountListenersLocked());
 		for(NodePtr node = head; node; node = node->next) {
 			listeners.push_back(ListenerInfo { Handle(node),
 				node->metadata ? *node->metadata : ListenerMetadata() });
 		}
 		return listeners;
+	}
+
+	std::size_t doCountListeners() const
+	{
+		std::lock_guard<Mutex> lockGuard(mutex);
+		return doCountListenersLocked();
+	}
+
+	// The caller holds mutex, so no ownership copies are needed during this traversal.
+	std::size_t doCountListenersLocked() const
+	{
+		std::size_t count = 0;
+		for(const Node * node = head.get(); node; node = node->next.get()) { ++count; }
+		return count;
 	}
 
 	void doInvokeInOrder(const ListenerList & listeners, const ListenerOrder & order,
@@ -453,18 +471,26 @@ private:
 		GetHandle && getHandle, Invoke && invoke) const
 	{
 		// Accept only handles in the snapshot, and invoke each subscription at most once.
+		if(selection.empty() || listeners.empty()) { return; }
 		using WeakNode = std::weak_ptr<Node>;
-		std::map<WeakNode, bool, std::owner_less<WeakNode> > remaining;
+		using HandleState = std::pair<WeakNode, bool>;
+		const std::owner_less<WeakNode> less;
+		std::vector<HandleState> remaining;
+		remaining.reserve(listeners.size());
 		for(const auto & listener : listeners) {
-			remaining.emplace(listener.handle, true);
+			remaining.emplace_back(listener.handle, false);
 		}
+		std::sort(remaining.begin(), remaining.end(),
+			[&less](const HandleState & a, const HandleState & b) { return less(a.first, b.first); });
 		for(auto & entry : selection) {
 			const Handle & handle = getHandle(entry);
-			auto it = remaining.find(handle);
-			if(it == remaining.end()) {
+			auto it = std::lower_bound(remaining.begin(), remaining.end(), handle,
+				[&less](const HandleState & state, const WeakNode & value) { return less(state.first, value); });
+			if(it == remaining.end() || less(handle, it->first) || it->second) {
 				continue;
 			}
-			remaining.erase(it);
+			// Keep owners in sorted order after invocation, including expired owners.
+			it->second = true;
 			NodePtr node;
 			{
 				std::lock_guard<Mutex> lockGuard(mutex);

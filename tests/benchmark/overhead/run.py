@@ -1,6 +1,7 @@
 """Build the same C++11 workload against the local fork and its upstream baseline."""
 import argparse
 import csv
+import hashlib
 import io
 import json
 import os
@@ -59,6 +60,8 @@ def pin_cpu():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", default="1224dd6", help="Local Git ref containing the upstream headers")
+    parser.add_argument("--baseline-features", action="store_true",
+                        help="The baseline is an earlier fork with the same extended API")
     parser.add_argument("--cmake", default="cmake")
     parser.add_argument("--rounds", type=int, default=4)
     parser.add_argument("--cpu", default=platform.processor())
@@ -84,7 +87,8 @@ def main():
             with contents.extractfile(member) as input_file:
                 destination.write_bytes(input_file.read())
     command([args.cmake, "-S", SOURCE, "-B", build,
-             "-DCMAKE_BUILD_TYPE=Release", f"-DUPSTREAM_INCLUDE_DIR={headers / 'include'}"])
+             "-DCMAKE_BUILD_TYPE=Release", f"-DUPSTREAM_INCLUDE_DIR={headers / 'include'}",
+             f"-DUPSTREAM_HAS_FORK_API={'ON' if args.baseline_features else 'OFF'}"])
     command([args.cmake, "--build", build, "--config", "Release", "--parallel", "2"])
     selected_cpu = pin_cpu()
 
@@ -135,8 +139,10 @@ def main():
     write_csv(build / "summary.csv", summary, columns)
     metadata = dict(date_utc=datetime.now(timezone.utc).isoformat(), platform=platform.platform(),
                     cpu=args.cpu, compiler=compiler, baseline=baseline,
+                    baseline_has_fork_api=args.baseline_features,
                     fork_commit=git("rev-parse", "HEAD"),
                     fork_headers_dirty=bool(git("status", "--porcelain", "--", "include")),
+                    fork_header_diff_sha256=hashlib.sha256(git("diff", "--", "include").encode()).hexdigest(),
                     logical_cpu=selected_cpu,
                     rounds=args.rounds, samples_per_case=args.rounds * 5,
                     build_type="Release", pointer_bits=8 * struct.calcsize("P"))

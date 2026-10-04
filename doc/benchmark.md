@@ -2,6 +2,8 @@
 
 For the fork's ordinary-call, listener-plan, result and allocation measurements against
 the upstream baseline, see [Fork overhead versus upstream](fork_overhead.md).
+See also [subsequent optimization results](optimization_results.md) for a before/after
+comparison of snapshot allocation, handle validation and result-vector reservation.
 The measurements below are historical upstream benchmarks on a different machine.
 
 Hardware: HP laptop, Intel(R) Core(TM) i5-8300H CPU @ 2.30GHz, 16 GB RAM  

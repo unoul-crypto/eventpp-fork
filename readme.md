@@ -55,7 +55,8 @@ and ignore handler returns. Ordering and planners are alternative selection mode
 See [listener metadata and plans](doc/listener_ordering.md),
 [return values and aggregation](doc/return_results.md),
 [queued results](doc/queue_results.md), and
-[measured overhead versus upstream](doc/fork_overhead.md).
+[measured overhead versus upstream](doc/fork_overhead.md), and
+[subsequent optimization results](doc/optimization_results.md).
 
 ## Facts and features
 
@@ -255,6 +256,7 @@ queue before calling `future.get()` on the same thread, or process it on a worke
     * [Handler return collection and aggregation](doc/return_results.md)
     * [Queued result futures and cancellation](doc/queue_results.md)
     * [Overhead comparison with upstream](doc/fork_overhead.md)
+    * [Listener selection and result-vector optimization](doc/optimization_results.md)
 * Utilities
     * [Utility class AnyData -- zero heap allocation event data in EventQueue](doc/anydata.md)
     * [Utility argumentAdapter -- adapt pass-in argument types to the types of the functioning being called](doc/argumentadapter.md)

@@ -2,6 +2,9 @@
 
 Generated from saved measurements by `tests/benchmark/overhead/report.py`.
 
+These saved measurements precede the optimization patch. See
+[subsequent optimization results](optimization_results.md) for its before/after comparison.
+
 ## Environment and method
 
 Measured on 2026-10-04: Windows-11-10.0.26200-SP0, AMD Ryzen Threadripper 2970WX 24-Core Processor, MSVC 193833145, 64-bit Release build. Measurement processes were pinned to logical CPU 0.

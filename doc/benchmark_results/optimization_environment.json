@@ -1,0 +1,16 @@
+{
+  "date_utc": "2026-10-04T09:26:10.263785+00:00",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "cpu": "AMD Ryzen Threadripper 2970WX 24-Core Processor",
+  "compiler": "compiler=MSVC 193833145",
+  "baseline": "7e8fd0e991981f5435c62de2291fec4cfe0b37ee",
+  "baseline_has_fork_api": true,
+  "fork_commit": "7e8fd0e991981f5435c62de2291fec4cfe0b37ee",
+  "fork_headers_dirty": true,
+  "fork_header_diff_sha256": "eb0dcab28f4fecc630875dcc0173361c95dfedfd9b72a76716acf64d6bd3a698",
+  "logical_cpu": 0,
+  "rounds": 4,
+  "samples_per_case": 20,
+  "build_type": "Release",
+  "pointer_bits": 64
+}

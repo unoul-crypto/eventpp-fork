@@ -174,6 +174,30 @@ TEST_CASE("EventDispatcher results, reference returns survive plan destruction")
 	REQUIRE(original == "original");
 }
 
+TEST_CASE("EventDispatcher results, subscription mutations preserve result traversal")
+{
+	Dispatcher dispatcher;
+	Dispatcher::Handle second;
+	bool changed = false;
+	auto first = dispatcher.appendListener(1, [&](int n) {
+		if(! changed) {
+			changed = true;
+			dispatcher.removeListener(1, second);
+			// New subscriptions do not extend the dispatch already in progress.
+			dispatcher.appendListener(1, [](int value) { return value + 30; });
+		}
+		return n + 10;
+	});
+	second = dispatcher.appendListener(1, [](int n) { return n + 20; });
+	auto initial = dispatcher.dispatchWithResults(1, 1);
+	REQUIRE(initial.results == std::vector<int> {11});
+	REQUIRE(initial.handles.size() == 1);
+	REQUIRE(sameHandle(initial.handles[0], first));
+	auto later = dispatcher.dispatchWithResults(1, 2);
+	REQUIRE(later.results == std::vector<int> {12, 32});
+	REQUIRE(later.handles.size() == 2);
+}
+
 TEST_CASE("EventDispatcher results, move-only handler returns")
 {
 	using ED = eventpp::EventDispatcher<int, std::unique_ptr<int>(), PointerPolicies>;

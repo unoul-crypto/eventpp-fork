@@ -121,6 +121,36 @@ TEST_CASE("EventDispatcher ordering, ignore duplicate, foreign and expired handl
 	REQUIRE(calls == std::vector<int> {1});
 }
 
+TEST_CASE("EventDispatcher ordering, handle validation preserves control block identity")
+{
+	Dispatcher dispatcher;
+	std::vector<int> calls;
+	auto a = dispatcher.appendListener(1, [&](int) { calls.push_back(1); });
+	auto b = dispatcher.appendListener(1, [&](int) { calls.push_back(2); });
+	auto pinned = a.lock();
+	using NodePtr = decltype(pinned);
+	// Same pointer, different owner: this must not be accepted as the subscription.
+	NodePtr borrowed(pinned.get(), [](NodePtr::element_type *) {});
+	Dispatcher::Handle foreignOwner(borrowed);
+	// Aliasing the same owner and pointer is a valid copy of the handle.
+	NodePtr alias(pinned, pinned.get());
+	Dispatcher::Handle sameOwner(alias);
+	dispatcher.setListenerOrdering(1, [=](const Dispatcher::ListenerList &, const int &) {
+		return Dispatcher::ListenerOrder {foreignOwner, sameOwner, b, b, a};
+	});
+	dispatcher.dispatch(1, 0);
+	REQUIRE(calls == std::vector<int> {1, 2});
+	calls.clear();
+	REQUIRE(dispatcher.removeListener(1, a));
+	dispatcher.dispatch(1, 0);
+	REQUIRE(calls == std::vector<int> {2});
+	pinned.reset();
+	alias.reset();
+	calls.clear();
+	dispatcher.dispatch(1, 0);
+	REQUIRE(calls == std::vector<int> {2});
+}
+
 TEST_CASE("EventDispatcher ordering, mutations during ordering use a snapshot")
 {
 	Dispatcher dispatcher;

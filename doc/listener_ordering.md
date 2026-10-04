@@ -235,6 +235,10 @@ or metadata copies. Each callback node has an additional shared pointer for opti
 metadata. With ordering enabled, snapshot creation copies each listener's metadata, and
 handle validation takes `O(N log N + M log N)` time for `N` snapshot listeners and `M`
 returned handles, plus the application ordering function and callbacks.
+The snapshot vector reserves space once to avoid repeated metadata copies during growth.
+Validation uses one sorted array of weak owners and invocation flags rather than one
+tree allocation per listener. Owner identity is preserved even for expired handles;
+validation storage is local to each dispatch. An empty selection skips validation allocation.
 A plan has the same validation cost. Entries using original arguments allocate no argument
 storage; each entry with replacements allocates owned storage for its tuple. Planner support
 adds no fields to callback nodes and does not create plans when ordinary ordering is used.

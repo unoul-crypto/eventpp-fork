@@ -28,6 +28,7 @@ Listener metadata and per-event selection/ordering are supported. See
 individual callback arguments, and snapshot semantics.
 Metadata can be replaced without reconnecting a listener using `setListenerMetadata`.
 Use `getListenerMetadata(event, handle, output)` to read a copy of its current metadata.
+Use `getListeners(event)` to obtain all registered handles and metadata in callback list order.
 
 Non-void handler returns can be collected with `dispatchWithResults` and combined by
 a per-event aggregator. See [handler results](return_results.md).

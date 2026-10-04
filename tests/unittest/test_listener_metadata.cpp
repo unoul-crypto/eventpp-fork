@@ -42,6 +42,133 @@ struct AssignPolicies {
 };
 }
 
+TEST_CASE("Listener snapshot, list order, event isolation and default metadata")
+{
+	Dispatcher dispatcher;
+	auto a = dispatcher.appendListener(1, [](int n) { return n; }, {{"id", 1}});
+	auto c = dispatcher.appendListener(1, [](int n) { return n; });
+	auto b = dispatcher.prependListener(1, [](int n) { return n; }, {{"id", 2}});
+	auto inserted = dispatcher.insertListener(1, [](int n) { return n; }, c, {{"id", 3}});
+	auto other = dispatcher.appendListener(2, [](int n) { return n; }, {{"id", 4}});
+	REQUIRE(dispatcher.setListenerMetadata(1, a, {{"id", 10}}));
+	const Dispatcher & view = dispatcher;
+	auto listeners = view.getListeners(1);
+	REQUIRE(listeners.size() == 4);
+	REQUIRE(listeners[0].handle.lock() == b.lock());
+	REQUIRE(listeners[1].handle.lock() == a.lock());
+	REQUIRE(listeners[2].handle.lock() == inserted.lock());
+	REQUIRE(listeners[3].handle.lock() == c.lock());
+	REQUIRE(listeners[0].metadata.at("id") == 2);
+	REQUIRE(listeners[1].metadata.at("id") == 10);
+	REQUIRE(listeners[2].metadata.at("id") == 3);
+	REQUIRE(listeners[3].metadata.empty());
+	auto second = view.getListeners(2);
+	REQUIRE(second.size() == 1);
+	REQUIRE(second[0].handle.lock() == other.lock());
+	REQUIRE(view.getListeners(999).empty());
+	REQUIRE(dispatcher.removeListener(2, other));
+	REQUIRE(view.getListeners(2).empty());
+
+	eventpp::EventDispatcher<int, void()> defaults;
+	defaults.appendListener(1, [] {}, {{"name", "first"}});
+	REQUIRE(defaults.getListeners(1)[0].metadata.at("name") == "first");
+}
+
+TEST_CASE("Listener snapshot, independent values and weak subscription lifetime")
+{
+	Dispatcher dispatcher;
+	auto a = dispatcher.appendListener(1, [](int n) { return n; }, {{"id", 1}});
+	auto b = dispatcher.appendListener(1, [](int n) { return n; }, {{"id", 2}});
+	auto original = dispatcher.getListeners(1);
+	auto local = original;
+	local[0].metadata["id"] = 99;
+	local.clear();
+	REQUIRE(dispatcher.getListeners(1)[0].metadata.at("id") == 1);
+	REQUIRE(dispatcher.setListenerMetadata(1, a, {{"id", 10}}));
+	auto pinned = b.lock();
+	REQUIRE(dispatcher.removeListener(1, b));
+	auto added = dispatcher.appendListener(1, [](int n) { return n; }, {{"id", 3}});
+	auto current = dispatcher.getListeners(1);
+	REQUIRE(current.size() == 2);
+	REQUIRE(current[0].metadata.at("id") == 10);
+	REQUIRE(current[1].handle.lock() == added.lock());
+	REQUIRE(original.size() == 2);
+	REQUIRE(original[0].metadata.at("id") == 1);
+	REQUIRE(original[1].metadata.at("id") == 2);
+	pinned.reset();
+	REQUIRE(original[1].handle.expired());
+}
+
+TEST_CASE("Listener snapshot, queue inspection does not execute selection, handlers or aggregation")
+{
+	using Queue = eventpp::EventQueue<int, int(int), MetadataPolicies>;
+	Queue queue;
+	int selections = 0, calls = 0, aggregates = 0;
+	queue.appendListener(1, [&](int n) { ++calls; return n; }, {{"id", 1}});
+	queue.appendListener(1, [&](int n) { ++calls; return n; }, {{"id", 2}});
+	queue.setListenerOrdering(1, [&](const Queue::ListenerList &, const int &) {
+		++selections;
+		return Queue::ListenerOrder {};
+	});
+	queue.setResultAggregator(1, [&](const Queue::ListenerResults &) { ++aggregates; return 0; });
+	auto future = queue.enqueueWithResults(1, 5);
+	const Queue & view = queue;
+	auto listeners = view.getListeners(1);
+	REQUIRE(listeners.size() == 2);
+	REQUIRE(listeners[0].metadata.at("id") == 1);
+	REQUIRE(listeners[1].metadata.at("id") == 2);
+	REQUIRE(selections == 0);
+	REQUIRE(calls == 0);
+	REQUIRE(aggregates == 0);
+	REQUIRE(queue.process());
+	REQUIRE(future.get().results.empty());
+	REQUIRE(selections == 1);
+	REQUIRE(aggregates == 1);
+	REQUIRE(calls == 0);
+}
+
+TEST_CASE("Listener snapshot, metadata copy exceptions leave subscriptions intact")
+{
+	using ED = eventpp::EventDispatcher<int, void(), ThrowPolicies>;
+	ED dispatcher;
+	auto handle = dispatcher.appendListener(1, [] {}, ThrowingMetadata(7));
+	ThrowingMetadata::throwOnCopy = true;
+	REQUIRE_THROWS_AS(dispatcher.getListeners(1), std::runtime_error);
+	ThrowingMetadata::throwOnCopy = false;
+	auto listeners = dispatcher.getListeners(1);
+	REQUIRE(listeners.size() == 1);
+	REQUIRE(listeners[0].metadata.value == 7);
+	REQUIRE(listeners[0].handle.lock() == handle.lock());
+	REQUIRE(dispatcher.setListenerMetadata(1, handle, ThrowingMetadata(8)));
+	REQUIRE(dispatcher.getListeners(1)[0].metadata.value == 8);
+}
+
+TEST_CASE("Listener snapshot, concurrent subscription and metadata changes remain consistent")
+{
+	Dispatcher dispatcher;
+	auto fixed = dispatcher.appendListener(1, [](int n) { return n; }, {{"a", 0}, {"b", 0}});
+	std::atomic<bool> failed {false};
+	std::thread writer([&] {
+		for(int n = 1; n <= 500; ++n) {
+			if(! dispatcher.setListenerMetadata(1, fixed, {{"a", n}, {"b", n}})) { failed = true; }
+			auto temporary = dispatcher.appendListener(1, [](int value) { return value; }, {{"a", n}, {"b", n}});
+			dispatcher.removeListener(1, temporary);
+		}
+	});
+	std::thread reader([&] {
+		for(int n = 0; n < 500; ++n) {
+			auto listeners = dispatcher.getListeners(1);
+			if(listeners.empty() || listeners[0].handle.lock() != fixed.lock()) { failed = true; }
+			for(const auto & listener : listeners) {
+				if(listener.metadata.at("a") != listener.metadata.at("b")) { failed = true; }
+			}
+		}
+	});
+	writer.join();
+	reader.join();
+	REQUIRE_FALSE(failed);
+}
+
 TEST_CASE("Listener metadata, getters return independent copies and default values")
 {
 	using ED = eventpp::EventDispatcher<int, void()>;

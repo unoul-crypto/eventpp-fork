@@ -39,6 +39,7 @@ install the headers from this fork.
 
 - Attach a custom dictionary to each listener; read or replace it without reconnecting
   using `getListenerMetadata` and `setListenerMetadata`.
+- Inspect registered listener handles and metadata with `getListeners(event)` snapshots.
 - Set an event's `setListenerOrdering` function to select and order listeners using
   their metadata and the event arguments. Omitted listeners are skipped for that dispatch.
 - Use `setListenerPlanner` to also supply different arguments to individual listeners.

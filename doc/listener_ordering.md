@@ -31,6 +31,7 @@ Handle insertListener(const Event &, const Callback &, const Handle & before,
                       const ListenerMetadata &);
 bool setListenerMetadata(const Event &, const Handle &, const ListenerMetadata &);
 bool getListenerMetadata(const Event &, const Handle &, ListenerMetadata & output) const;
+ListenerList getListeners(const Event &) const;
 void setListenerOrdering(const Event &, const ListenerOrdering &);
 void clearListenerOrdering(const Event &);
 void setListenerPlanner(const Event &, const ListenerPlanner &);
@@ -79,6 +80,28 @@ not affect another copy. Pointer values inside application metadata retain ordin
 ownership semantics; replacement is not a deep copy of pointed-to objects.
 The getter reads the current stored value even when called from a selection function
 whose listener snapshot still contains an older value.
+
+`getListeners(event)` returns a snapshot of all currently registered listeners for that
+event. Each `ListenerInfo` contains its `handle` and a copy of its `metadata`. The order
+is the callback list order, including the effects of `prependListener` and `insertListener`.
+A missing event or an empty list returns an empty vector. `EventQueue` inherits this
+const method; inspecting it does not process queued events.
+
+```cpp
+auto listeners = dispatcher.getListeners(event);
+for(const auto & listener : listeners) {
+    // Read listener.metadata; use listener.handle to update or remove the subscription.
+}
+```
+
+Inspection does not run filters, ordering/planning functions, callbacks or aggregators,
+and includes listeners that a selection function might omit on a later dispatch. The
+snapshot is copied under the callback list mutex. Later subscription or metadata changes
+do not update the returned vector; modifying its records does not update subscriptions.
+Handles are weak: a snapshot does not extend callback lifetime, and a returned handle
+may already be expired or removed when the caller uses it. As with other metadata copies,
+pointer members retain their ordinary sharing semantics. Metadata-copy and allocation
+exceptions propagate without changing the subscriptions.
 
 Setting an empty ordering function is equivalent to clearing it. Ordering can be set
 before listeners are registered. A returned empty order skips all listeners for that
@@ -244,3 +267,5 @@ storage; each entry with replacements allocates owned storage for its tuple. Pla
 adds no fields to callback nodes and does not create plans when ordinary ordering is used.
 Updating metadata copies the supplied value and checks handle membership in `O(N)` time.
 Reading metadata also checks membership in `O(N)` time, followed by one assignment.
+`getListeners` traverses the list in `O(N)` time and allocates its snapshot vector plus
+any storage needed to copy metadata. It uses the same reserved snapshot builder as selection.

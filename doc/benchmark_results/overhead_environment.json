@@ -1,0 +1,14 @@
+{
+  "date_utc": "2026-10-04T09:06:00.239178+00:00",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "cpu": "AMD Ryzen Threadripper 2970WX 24-Core Processor",
+  "compiler": "compiler=MSVC 193833145",
+  "baseline": "1224dd6c9bd4577d686ac42334fc545997f5ece1",
+  "fork_commit": "72ed309381f1ee848d1e89108ec41cbee5f6b3f2",
+  "fork_headers_dirty": false,
+  "logical_cpu": 0,
+  "rounds": 4,
+  "samples_per_case": 20,
+  "build_type": "Release",
+  "pointer_bits": 64
+}

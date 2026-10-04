@@ -1,9 +1,10 @@
-# eventpp -- C++ library for event dispatcher and callback list
+# eventpp-fork -- C++ event dispatch with listener plans and results
 
-- [eventpp -- C++ library for event dispatcher and callback list](#eventpp----c-library-for-event-dispatcher-and-callback-list)
+- [eventpp-fork -- C++ event dispatch with listener plans and results](#eventpp-fork----c-event-dispatch-with-listener-plans-and-results)
+    - [Fork features](#fork-features)
     - [Facts and features](#facts-and-features)
     - [License](#license)
-    - [Version 0.1.3](#version-013)
+    - [Upstream version 0.1.3](#upstream-version-013)
     - [Source code](#source-code)
     - [Supported compilers](#supported-compilers)
     - [C++ standard requirements](#c-standard-requirements)
@@ -13,20 +14,48 @@
         - [Using CallbackList](#using-callbacklist)
         - [Using EventDispatcher](#using-eventdispatcher)
         - [Using EventQueue](#using-eventqueue)
+        - [Planning listeners and collecting results](#planning-listeners-and-collecting-results)
     - [Documentations](#documentations)
     - [Motivations](#motivations)
     - [Change log](#change-log)
     - [Contributors](#contributors)
 
 eventpp is a C++ event library for callbacks, event dispatcher, and event queue. With eventpp you can easily implement signal and slot mechanism, publisher and subscriber pattern, or observer pattern.  
-eventpp is mature and production-ready.
+This fork extends [upstream eventpp](https://github.com/wqking/eventpp) with listener
+metadata, per-event execution plans, return collection, aggregation, and queued result
+futures. The namespace remains `eventpp`; the library is header-only and requires C++11.
 
 ![C++](https://img.shields.io/badge/C%2B%2B-11-blue)
 ![Compilers](https://img.shields.io/badge/Compilers-GCC%2FMSVC%2FClang%2FIntel-blue)
 ![License](https://img.shields.io/badge/License-Apache--2.0-blue)
-![CI](https://github.com/wqking/eventpp/workflows/CI/badge.svg)
+![CI](https://github.com/unoul-crypto/eventpp-fork/workflows/CI/badge.svg)
 [![Vcpkg port](https://img.shields.io/vcpkg/v/eventpp)](https://vcpkg.link/ports/eventpp)
 [![Conan Center](https://img.shields.io/conan/v/eventpp)](https://conan.io/center/recipes/eventpp)
+
+The package-manager badges refer to upstream eventpp. To use these extensions,
+install the headers from this fork.
+
+## Fork features
+
+- Attach a custom dictionary to each listener; read or replace it without reconnecting
+  using `getListenerMetadata` and `setListenerMetadata`.
+- Set an event's `setListenerOrdering` function to select and order listeners using
+  their metadata and the event arguments. Omitted listeners are skipped for that dispatch.
+- Use `setListenerPlanner` to also supply different arguments to individual listeners.
+- Call `dispatchWithResults` to obtain handler return values and the matching handles.
+  An optional per-event `setResultAggregator` produces an additional aggregate value.
+- Call `EventQueue::enqueueWithResults` to obtain a `std::future<DispatchResult>` that
+  completes when the event is processed. Handler exceptions are delivered through the future.
+
+Selection, plans and result APIs apply to `EventDispatcher` and `EventQueue`.
+Standalone `CallbackList` supports listener metadata. Heterogeneous classes retain
+their upstream APIs. Ordinary `dispatch` and `enqueue` keep their existing behavior
+and ignore handler returns. Ordering and planners are alternative selection modes.
+
+See [listener metadata and plans](doc/listener_ordering.md),
+[return values and aggregation](doc/return_results.md),
+[queued results](doc/queue_results.md), and
+[measured overhead versus upstream](doc/fork_overhead.md).
 
 ## Facts and features
 
@@ -40,9 +69,9 @@ eventpp is mature and production-ready.
     - Exception safety. Most operations guarantee strong exception safety.
     - Well tested. Backed by unit tests.
 - **Fast**
-    - The EventQueue can process 10M events in 1 second (10K events per millisecond).
-    - The CallbackList can invoke 100M callbacks in 1 second (100K callbacks per millisecond).
-    - The CallbackList can add/remove 5M callbacks in 1 second (5K callbacks per millisecond).
+    - Ordinary dispatch avoids listener snapshots when no selection or result collection is requested.
+    - See the [fork comparison](doc/fork_overhead.md) for local measurements and
+      [upstream benchmarks](doc/benchmark.md) for historical workloads.
     - With the helper class AnyData, it's possible to avoid heap allocation when sending events via EventQueue.
 - **Flexible and easy to use**
     - Listeners and events can be of any type and do not need to be inherited from any base class.
@@ -55,21 +84,23 @@ eventpp is mature and production-ready.
 
 Apache License, Version 2.0  
 
-## Version 0.1.3
+## Upstream version 0.1.3
 
 `eventpp` package is available in C++ package managers Vcpkg, Conan, Hunter, and Homebrew.  
-The master branch is usable and stable.  
-Don't worry about the large time span between commits and releases. The library is actively maintained.  
-The master branch is currently fully back compatible with the first version. So your project won't get any back compatible issues.  
-If you find any back compatible issue which is not announced, please report a bug.
+This fork is based on upstream commit `1224dd6`. Its additional APIs are documented
+above and are not part of the upstream 0.1.3 package-manager releases. Existing call
+sites are covered by the upstream tests alongside tests for the extensions.
 
 ## Source code
 
-[https://github.com/wqking/eventpp](https://github.com/wqking/eventpp)
+[Fork repository](https://github.com/unoul-crypto/eventpp-fork) ·
+[Upstream repository](https://github.com/wqking/eventpp)
 
 ## Supported compilers
 
-Tested with MSVC 2022 and 2019, MinGW (Msys) GCC 7.2, Ubuntu GCC 5.4, Intel C++ 2022, and MacOS GCC.
+The fork's extensions have been locally tested with MSVC 2022. The existing CI workflow
+also builds on Windows, Ubuntu and macOS; see its runs for results on those platforms.
+Upstream reports tests with MSVC 2022 and 2019, MinGW (Msys) GCC 7.2, Ubuntu GCC 5.4, Intel C++ 2022, and MacOS GCC.
 GCC 4.8.3 can compile the library, but I don't support or maintain for GCC prior to GCC 5.
 In brief, MSVC, GCC, Clang that has well support for C++11, or released after 2019, should be able to compile the library.
 
@@ -89,7 +120,9 @@ In brief, MSVC, GCC, Clang that has well support for C++11, or released after 20
 
 ### Use eventpp in your project
 
-`eventpp` package is available in C++ package managers Vcpkg, Conan, and Hunter. There are various methods to use eventpp.  
+Clone or download this fork and add its `include` directory to your compiler's header
+search path. No library binary is needed. Package-manager installations of upstream
+eventpp do not include the extensions described here.
 Please [read the document](doc/install.md) for details.
 
 ### Using CallbackList
@@ -144,6 +177,65 @@ queue.enqueue(5, "World", false);
 queue.process();
 ```
 
+### Planning listeners and collecting results
+
+```cpp
+#include "eventpp/eventdispatcher.h"
+#include "eventpp/eventqueue.h"
+#include <map>
+#include <numeric>
+#include <string>
+
+struct Policies {
+    using ListenerMetadata = std::map<std::string, int>;
+    using AggregationResult = long long;
+};
+
+int main() {
+    using Dispatcher = eventpp::EventDispatcher<int, int(int), Policies>;
+    Dispatcher dispatcher;
+    auto first = dispatcher.appendListener(1, [](int n) { return n + 1; },
+                                          {{"enabled", 1}, {"factor", 2}});
+    dispatcher.appendListener(1, [](int n) { return n * 3; },
+                              {{"enabled", 1}, {"factor", 1}});
+
+    Dispatcher::ListenerMetadata metadata;
+    if(dispatcher.getListenerMetadata(1, first, metadata)) {
+        metadata["factor"] = 3;
+        dispatcher.setListenerMetadata(1, first, metadata);
+    }
+
+    dispatcher.setListenerPlanner(1,
+        [](const Dispatcher::ListenerList & listeners, const int & n) {
+            Dispatcher::ListenerPlan plan;
+            // Reverse the registration order and prepare each handler's argument.
+            for(auto it = listeners.rbegin(); it != listeners.rend(); ++it) {
+                if(it->metadata.at("enabled")) {
+                    plan.add(it->handle, n * it->metadata.at("factor"));
+                }
+            }
+            return plan;
+        });
+    dispatcher.setResultAggregator(1, [](const Dispatcher::ListenerResults & values) {
+        return std::accumulate(values.begin(), values.end(), 0LL);
+    });
+    auto result = dispatcher.dispatchWithResults(1, 3);
+    // result.results == {9, 10}; result.handles matches that order.
+    // *result.aggregate == 19.
+
+    eventpp::EventQueue<int, int(int), Policies> queue;
+    queue.appendListener(1, [](int n) { return n * 2; });
+    auto future = queue.enqueueWithResults(1, 3);
+    queue.process();
+    auto queued = future.get(); // queued.results == {6}.
+}
+```
+
+Result collection requires a non-void handler return type that can be stored as a value.
+The aggregate is optional: `result.aggregate` is null when no aggregator is configured.
+Queue listeners, plans and aggregators are selected at processing time. Process the
+queue before calling `future.get()` on the same thread, or process it on a worker thread.
+
 ## Documentations
 
 * Setup
@@ -158,6 +250,11 @@ queue.process();
     * [Class EventQueue reference](doc/eventqueue.md)
     * [Policies -- configure eventpp](doc/policies.md)
     * [Mixins -- extend eventpp](doc/mixins.md)
+* Fork extensions
+    * [Listener metadata, ordering and per-handler arguments](doc/listener_ordering.md)
+    * [Handler return collection and aggregation](doc/return_results.md)
+    * [Queued result futures and cancellation](doc/queue_results.md)
+    * [Overhead comparison with upstream](doc/fork_overhead.md)
 * Utilities
     * [Utility class AnyData -- zero heap allocation event data in EventQueue](doc/anydata.md)
     * [Utility argumentAdapter -- adapt pass-in argument types to the types of the functioning being called](doc/argumentadapter.md)
@@ -190,6 +287,11 @@ I (wqking) am a big fan of observer pattern (publish/subscribe pattern), and I u
 Thanking to C++11, now it's quite easy to write a reusable event library with beautiful syntax (it's a nightmare to simulate the variadic template in C++03), so here is `eventpp`.
 
 ## Change log
+
+**Fork extensions**
+Listener metadata registration, reading and replacement; per-event ordering and argument
+plans; result vectors and aggregation; queued result futures. See the extension documents
+for snapshot, exception and cancellation semantics.
 
 **Version 0.1.3**  Sep 21, 2023  
 Added utility class AnyData.  

@@ -72,6 +72,35 @@ TEST_CASE("Dispatcher concurrent removal during ordinary and report dispatch", "
 	REQUIRE(dispatcher.getListeners(1).size() == 1);
 }
 
+TEST_CASE("Heterogeneous callback list concurrent lazy creation and traversal", "[thread][race-regression]")
+{
+	eventpp::HeterCallbackList<eventpp::HeterTuple<void(), void(int)>> callbacks;
+	test_threading::Barrier start(4);
+	std::thread writer([&] {
+		start.arriveAndWait();
+		for(int i = 0; i < 4096; ++i) {
+			auto first = callbacks.append([] {});
+			auto second = callbacks.append([](int) {});
+			std::this_thread::yield();
+			callbacks.remove(first);
+			callbacks.remove(second);
+		}
+	});
+	std::thread reader([&] {
+		start.arriveAndWait();
+		for(int i = 0; i < 4096; ++i) { callbacks(); callbacks(i); }
+	});
+	std::thread inspector([&] {
+		start.arriveAndWait();
+		for(int i = 0; i < 4096; ++i) { (void)callbacks.empty(); }
+	});
+	start.arriveAndWait();
+	writer.join();
+	reader.join();
+	inspector.join();
+	REQUIRE(callbacks.empty());
+}
+
 TEST_CASE("Queue concurrent producers, consumers, inspection and cancellation", "[thread][race-regression]")
 {
 	using Queue = eventpp::EventQueue<int, int(int)>;
@@ -127,7 +156,8 @@ TEST_CASE("Queue concurrent producers, consumers, inspection and cancellation", 
 	for(int id = 0; id < count; ++id) {
 		REQUIRE(futures[id].wait_for(std::chrono::seconds(0)) == std::future_status::ready);
 		try {
-			REQUIRE(futures[id].get().results == std::vector<int> {id});
+			auto result = futures[id].get();
+			REQUIRE(result.results == std::vector<int> {id});
 			REQUIRE(calls[id].load() == 1);
 		}
 		catch(const std::future_error & error) {

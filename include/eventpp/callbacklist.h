@@ -348,7 +348,7 @@ public:
 		std::lock_guard<Mutex> lockGuard(mutex);
 
 		auto node = handle.lock();
-		if(node) {
+		if(node && node->counter.load(std::memory_order_relaxed) != removedCounter) {
 			doFreeNode(node);
 			return true;
 		}

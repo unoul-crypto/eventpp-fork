@@ -72,6 +72,41 @@ TEST_CASE("Dispatcher concurrent removal during ordinary and report dispatch", "
 	REQUIRE(dispatcher.getListeners(1).size() == 1);
 }
 
+TEST_CASE("Repeated removal of an in-flight callback preserves new listeners", "[thread][race-regression]")
+{
+	eventpp::CallbackList<void()> callbacks;
+	std::mutex mutex;
+	std::condition_variable condition;
+	bool entered = false;
+	bool release = false;
+	int calls = 0;
+	callbacks.append([] {});
+	auto handle = callbacks.append([&] {
+		std::unique_lock<std::mutex> lock(mutex);
+		entered = true;
+		condition.notify_one();
+		condition.wait(lock, [&] { return release; });
+	});
+	std::thread worker([&] { callbacks(); });
+	{
+		std::unique_lock<std::mutex> lock(mutex);
+		condition.wait(lock, [&] { return entered; });
+	}
+	const bool firstRemoved = callbacks.remove(handle);
+	callbacks.append([&] { ++calls; });
+	const bool secondRemoved = callbacks.remove(handle);
+	{
+		std::lock_guard<std::mutex> lock(mutex);
+		release = true;
+		condition.notify_one();
+	}
+	worker.join();
+	callbacks();
+	REQUIRE(firstRemoved);
+	REQUIRE_FALSE(secondRemoved);
+	REQUIRE(calls == 1);
+}
+
 TEST_CASE("Heterogeneous callback list concurrent lazy creation and traversal", "[thread][race-regression]")
 {
 	eventpp::HeterCallbackList<eventpp::HeterTuple<void(), void(int)>> callbacks;

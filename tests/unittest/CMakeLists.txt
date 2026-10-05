@@ -5,6 +5,7 @@ set(SRC_TEST
 	test_callbacklist_basic.cpp
 	test_callbacklist_ctors.cpp
 	test_callbacklist_multithread.cpp
+	test_thread_safety.cpp
 	test_dispatcher_basic.cpp
 	test_dispatcher_ordering.cpp
 	test_dispatcher_planner.cpp

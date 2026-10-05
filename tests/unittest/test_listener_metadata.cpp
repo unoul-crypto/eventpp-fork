@@ -143,7 +143,7 @@ TEST_CASE("Listener snapshot, metadata copy exceptions leave subscriptions intac
 	REQUIRE(dispatcher.getListeners(1)[0].metadata.value == 8);
 }
 
-TEST_CASE("Listener snapshot, concurrent subscription and metadata changes remain consistent")
+TEST_CASE("Listener snapshot, concurrent subscription and metadata changes remain consistent", "[thread]")
 {
 	Dispatcher dispatcher;
 	auto fixed = dispatcher.appendListener(1, [](int n) { return n; }, {{"a", 0}, {"b", 0}});
@@ -364,7 +364,7 @@ TEST_CASE("Listener metadata, copy failure leaves the previous value intact")
 	REQUIRE(dispatcher.dispatchWithResults(1).results == std::vector<int> {7});
 }
 
-TEST_CASE("Listener metadata, concurrent updates produce consistent snapshots")
+TEST_CASE("Listener metadata, concurrent updates produce consistent snapshots", "[thread]")
 {
 	Dispatcher dispatcher;
 	auto handle = dispatcher.appendListener(1, [](int n) { return n; }, {{"a", 0}, {"b", 0}});

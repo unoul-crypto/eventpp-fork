@@ -260,6 +260,7 @@ queue before calling `future.get()` on the same thread, or process it on a worke
     * [Listener metadata, ordering and per-handler arguments](doc/listener_ordering.md)
     * [Handler return collection and aggregation](doc/return_results.md)
     * [Listener exceptions and dispatch reports](doc/listener_errors.md)
+    * [Compatibility and sanitizer checks](doc/testing.md)
     * [Queued result futures and cancellation](doc/queue_results.md)
     * [Overhead comparison with upstream](doc/fork_overhead.md)
     * [Listener selection and result-vector optimization](doc/optimization_results.md)

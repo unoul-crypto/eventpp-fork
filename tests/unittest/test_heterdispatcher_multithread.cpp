@@ -14,18 +14,19 @@
 #include "test.h"
 #include "eventpp/hetereventdispatcher.h"
 
+#include "test_threading.h"
 #include <thread>
 #include <numeric>
 #include <random>
 #include <algorithm>
 
-TEST_CASE("HeterEventDispatcher, multi threading")
+TEST_CASE("HeterEventDispatcher, multi threading", "[thread]")
 {
 	using ED = eventpp::HeterEventDispatcher<int, eventpp::HeterTuple<void (int), void (int, int)> >;
 	ED dispatcher;
 
-	constexpr int threadCount = 256;
-	constexpr int eventCountPerThread = 1024 * 4;
+	constexpr int threadCount = test_threading::threadCount;
+	constexpr int eventCountPerThread = test_threading::itemsPerThread;
 	constexpr int itemCount = threadCount * eventCountPerThread;
 
 	std::vector<int> eventList(itemCount);

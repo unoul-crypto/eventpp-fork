@@ -353,7 +353,7 @@ TEST_CASE("EventQueue results, synchronous collection and ordinary queue process
 	REQUIRE(aggregates == 1);
 }
 
-TEST_CASE("EventDispatcher results, concurrent collections have independent vectors")
+TEST_CASE("EventDispatcher results, concurrent collections have independent vectors", "[thread]")
 {
 	Dispatcher dispatcher;
 	dispatcher.appendListener(1, [](int n) { return n * 2; });

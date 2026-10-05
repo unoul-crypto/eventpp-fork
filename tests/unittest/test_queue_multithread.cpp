@@ -14,18 +14,21 @@
 #include "test.h"
 #include "eventpp/eventqueue.h"
 
+#include "test_threading.h"
 #include <thread>
 #include <numeric>
 #include <random>
 #include <algorithm>
+#include <condition_variable>
+#include <mutex>
 
-TEST_CASE("EventQueue, multi threading, int, void (int)")
+TEST_CASE("EventQueue, multi threading, int, void (int)", "[thread]")
 {
 	using EQ = eventpp::EventQueue<int, void (int)>;
 	EQ queue;
 
-	constexpr int threadCount = 256;
-	constexpr int dataCountPerThread = 1024 * 4;
+	constexpr int threadCount = test_threading::threadCount;
+	constexpr int dataCountPerThread = test_threading::itemsPerThread;
 	constexpr int itemCount = threadCount * dataCountPerThread;
 
 	std::vector<int> eventList(itemCount);
@@ -60,7 +63,7 @@ TEST_CASE("EventQueue, multi threading, int, void (int)")
 	REQUIRE(dataList == compareList);
 }
 
-TEST_CASE("EventQueue, multi threading, one thread waits")
+TEST_CASE("EventQueue, multi threading, one thread waits", "[thread]")
 {
 	using EQ = eventpp::EventQueue<int, void (int)>;
 	EQ queue;
@@ -74,8 +77,11 @@ TEST_CASE("EventQueue, multi threading, one thread waits")
 	std::vector<int> dataList(itemCount);
 
 	std::atomic<int> threadProcessCount(0);
+	std::mutex completionMutex;
+	std::condition_variable completionCondition;
+	bool ready = false;
 
-	std::thread thread([stopEvent, otherEvent, &dataList, &queue, &threadProcessCount]() {
+	std::thread thread([&]() {
 		volatile bool shouldStop = false;
 		queue.appendListener(stopEvent, [&shouldStop](int) {
 			shouldStop = true;
@@ -83,31 +89,44 @@ TEST_CASE("EventQueue, multi threading, one thread waits")
 		queue.appendListener(otherEvent, [&dataList](const int index) {
 			dataList[index] += index + 1;
 		});
+		{
+			std::lock_guard<std::mutex> lock(completionMutex);
+			ready = true;
+		}
+		completionCondition.notify_one();
 
 		while(! shouldStop) {
 			queue.wait();
 
-			++threadProcessCount;
-
 			queue.process();
+			{
+				std::lock_guard<std::mutex> lock(completionMutex);
+				++threadProcessCount;
+			}
+			completionCondition.notify_one();
 		}
 	});
+	{
+		std::unique_lock<std::mutex> lock(completionMutex);
+		completionCondition.wait(lock, [&] { return ready; });
+	}
 	
 	REQUIRE(threadProcessCount.load() == 0);
 
-	auto waitUntilQueueEmpty = [&queue]() {
-		while(queue.waitFor(std::chrono::nanoseconds(0))) ;
+	auto waitUntilProcessed = [&](int count) {
+		std::unique_lock<std::mutex> lock(completionMutex);
+		completionCondition.wait(lock, [&] { return threadProcessCount.load() >= count; });
 	};
 
 	SECTION("Enqueue one by one") {
 		queue.enqueue(otherEvent, 1);
-		waitUntilQueueEmpty();
+		waitUntilProcessed(1);
 		REQUIRE(threadProcessCount.load() == 1);
 		REQUIRE(queue.emptyQueue());
 		REQUIRE(dataList == std::vector<int>{ 0, 2, 0, 0, 0 });
 
 		queue.enqueue(otherEvent, 3);
-		waitUntilQueueEmpty();
+		waitUntilProcessed(2);
 		REQUIRE(threadProcessCount.load() == 2);
 		REQUIRE(queue.emptyQueue());
 		REQUIRE(dataList == std::vector<int>{ 0, 2, 0, 4, 0 });
@@ -115,12 +134,12 @@ TEST_CASE("EventQueue, multi threading, one thread waits")
 
 	SECTION("Enqueue two") {
 		queue.enqueue(otherEvent, 1);
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		waitUntilProcessed(1);
 		REQUIRE(threadProcessCount.load() == 1);
 		REQUIRE(queue.emptyQueue());
 
 		queue.enqueue(otherEvent, 3);
-		waitUntilQueueEmpty();
+		waitUntilProcessed(2);
 
 		REQUIRE(threadProcessCount.load() == 2);
 		REQUIRE(dataList == std::vector<int>{ 0, 2, 0, 4, 0 });
@@ -141,7 +160,7 @@ TEST_CASE("EventQueue, multi threading, one thread waits")
 			REQUIRE(! queue.emptyQueue());
 		}
 
-		waitUntilQueueEmpty();
+		waitUntilProcessed(1);
 		REQUIRE(threadProcessCount.load() == 1);
 		REQUIRE(dataList == std::vector<int>{ 0, 0, 3, 0, 5 });
 	}
@@ -150,7 +169,7 @@ TEST_CASE("EventQueue, multi threading, one thread waits")
 	thread.join();
 }
 
-TEST_CASE("EventQueue, multi threading, many threads wait")
+TEST_CASE("EventQueue, multi threading, many threads wait", "[thread]")
 {
 	using EQ = eventpp::EventQueue<int, void (int)>;
 	EQ queue;
@@ -167,11 +186,14 @@ TEST_CASE("EventQueue, multi threading, many threads wait")
 	std::vector<std::thread> threadList;
 
 	std::atomic<bool> shouldStop(false);
+	std::mutex dataMutex;
 
 	queue.appendListener(stopEvent, [&shouldStop](int) {
 		shouldStop = true;
 	});
-	queue.appendListener(otherEvent, [&dataList](const int index) {
+	queue.appendListener(otherEvent, [&dataList, &dataMutex](const int index) {
+		// Concurrent process() calls may execute this same handler simultaneously.
+		std::lock_guard<std::mutex> lock(dataMutex);
 		++dataList[index];
 	});
 
@@ -211,4 +233,3 @@ TEST_CASE("EventQueue, multi threading, many threads wait")
 
 	REQUIRE(std::accumulate(dataList.begin(), dataList.end(), 0) == itemCount * 2);
 }
-

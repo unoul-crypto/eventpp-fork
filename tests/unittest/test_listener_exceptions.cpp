@@ -6,6 +6,8 @@
 #include <memory>
 #include <numeric>
 #include <stdexcept>
+#include <atomic>
+#include <thread>
 
 namespace {
 using Dispatcher = eventpp::EventDispatcher<int, int(int)>;
@@ -310,4 +312,55 @@ TEST_CASE("Listener exceptions, custom event extraction works for report APIs")
 	auto future = queue.enqueueWithReport(Event {7, 10});
 	REQUIRE(queue.process());
 	REQUIRE(future.get().results == std::vector<int> {10});
+}
+
+TEST_CASE("Listener exceptions, concurrent policy changes keep each dispatch consistent", "[thread]")
+{
+	Dispatcher dispatcher;
+	dispatcher.appendListener(1, [](int) -> int { throw std::runtime_error("failure"); });
+	dispatcher.appendListener(1, [](int) -> int { throw std::runtime_error("failure"); });
+	dispatcher.appendListener(1, [](int n) { return n; });
+	std::atomic<bool> failed {false};
+	std::atomic<int> completed {0};
+	std::thread writer([&] {
+		for(int n = 0; n < 1000; ++n) {
+			dispatcher.setListenerExceptionPolicy(1, n % 2 ? Policy::Continue : Policy::Propagate);
+		}
+	});
+	auto consume = [&] {
+		for(int n = 0; n < 500; ++n) {
+			try {
+				auto report = dispatcher.dispatchWithReport(1, n);
+				if(report.results != std::vector<int>{n} || report.errors.size() != 2) { failed = true; }
+			}
+			catch(const std::runtime_error &) {}
+			catch(...) { failed = true; }
+			++completed;
+		}
+	};
+	std::thread first(consume), second(consume);
+	writer.join();
+	first.join();
+	second.join();
+	REQUIRE_FALSE(failed);
+	REQUIRE(completed == 1000);
+}
+
+TEST_CASE("Listener exceptions, competing queued report dispatch completes only once", "[thread]")
+{
+	eventpp::EventQueue<int, void()> queue;
+	std::atomic<int> completed {0};
+	queue.appendListener(1, [] { throw std::runtime_error("failure"); });
+	queue.appendListener(1, [&] { ++completed; });
+	queue.setListenerExceptionPolicy(1, Policy::Continue);
+	auto future = queue.enqueueWithReport(1);
+	decltype(queue)::QueuedEvent item;
+	REQUIRE(queue.takeEvent(&item));
+	std::vector<std::thread> workers;
+	for(int n = 0; n < 8; ++n) { workers.emplace_back([&] { queue.dispatch(item); }); }
+	for(auto & worker : workers) { worker.join(); }
+	auto report = future.get();
+	REQUIRE(completed == 1);
+	REQUIRE(report.errors.size() == 1);
+	REQUIRE_THROWS_WITH(std::rethrow_exception(report.errors[0].exception), "failure");
 }

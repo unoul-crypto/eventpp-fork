@@ -13,17 +13,18 @@
 
 #include "test_callbacklist_util.h"
 
+#include "test_threading.h"
 #include <thread>
 #include <random>
 
-TEST_CASE("CallbackList, multi threading, append")
+TEST_CASE("CallbackList, multi threading, append", "[thread]")
 {
 	using CL = eventpp::CallbackList<void(), FakeCallbackListPolicies>;
 
 	CL callbackList;
 
-	constexpr int threadCount = 256;
-	constexpr int taskCountPerThread = 1024 * 4;
+	constexpr int threadCount = test_threading::threadCount;
+	constexpr int taskCountPerThread = test_threading::itemsPerThread;
 	constexpr int itemCount = threadCount * taskCountPerThread;
 
 	std::vector<int> taskList(itemCount);
@@ -51,14 +52,14 @@ TEST_CASE("CallbackList, multi threading, append")
 	verifyDisorderedLinkedList(callbackList, compareList);
 }
 
-TEST_CASE("CallbackList, multi threading, remove")
+TEST_CASE("CallbackList, multi threading, remove", "[thread]")
 {
 	using CL = eventpp::CallbackList<void(), FakeCallbackListPolicies>;
 
 	CL callbackList;
 
-	constexpr int threadCount = 256;
-	constexpr int taskCountPerThread = 1024 * 4;
+	constexpr int threadCount = test_threading::threadCount;
+	constexpr int taskCountPerThread = test_threading::itemsPerThread;
 	constexpr int itemCount = threadCount * taskCountPerThread;
 
 	std::vector<int> taskList(itemCount);
@@ -90,14 +91,14 @@ TEST_CASE("CallbackList, multi threading, remove")
 	REQUIRE(! callbackList.tail);
 }
 
-TEST_CASE("CallbackList, multi threading, double remove")
+TEST_CASE("CallbackList, multi threading, double remove", "[thread]")
 {
 	using CL = eventpp::CallbackList<void(), FakeCallbackListPolicies>;
 
 	CL callbackList;
 
-	constexpr int threadCount = 256;
-	constexpr int taskCountPerThread = 1024 * 4;
+	constexpr int threadCount = test_threading::threadCount;
+	constexpr int taskCountPerThread = test_threading::itemsPerThread;
 	constexpr int itemCount = threadCount * taskCountPerThread;
 
 	std::vector<int> taskList(itemCount);
@@ -137,14 +138,14 @@ TEST_CASE("CallbackList, multi threading, double remove")
 	REQUIRE(! callbackList.tail);
 }
 
-TEST_CASE("CallbackList, multi threading, append/double remove")
+TEST_CASE("CallbackList, multi threading, append/double remove", "[thread]")
 {
 	using CL = eventpp::CallbackList<void(), FakeCallbackListPolicies>;
 
 	CL callbackList;
 
-	constexpr int threadCount = 256;
-	constexpr int taskCountPerThread = 1024 * 4;
+	constexpr int threadCount = test_threading::threadCount;
+	constexpr int taskCountPerThread = test_threading::itemsPerThread;
 	constexpr int itemCount = threadCount * taskCountPerThread;
 
 	std::vector<int> taskList(itemCount);
@@ -152,13 +153,16 @@ TEST_CASE("CallbackList, multi threading, append/double remove")
 	std::shuffle(taskList.begin(), taskList.end(), std::mt19937(std::random_device()()));
 
 	std::vector<CL::Handle> handleList(taskList.size());
+	test_threading::Barrier appended(threadCount);
 
 	std::vector<std::thread> threadList;
 	for(int i = 0; i < threadCount; ++i) {
-		threadList.emplace_back([i, taskCountPerThread, &callbackList, &handleList, threadCount, &taskList]() {
+		threadList.emplace_back([i, taskCountPerThread, &callbackList, &handleList, threadCount, &taskList, &appended]() {
 			for(int k = i * taskCountPerThread; k < (i + 1) * taskCountPerThread; ++k) {
 				handleList[k] = callbackList.append(taskList[k]);
 			}
+			// Publish every handle before threads begin removing neighbours' entries.
+			appended.arriveAndWait();
 			int start = i;
 			int end = i + 1;
 			if(i > 0) {
@@ -183,14 +187,14 @@ TEST_CASE("CallbackList, multi threading, append/double remove")
 	REQUIRE(! callbackList.tail);
 }
 
-TEST_CASE("CallbackList, multi threading, insert")
+TEST_CASE("CallbackList, multi threading, insert", "[thread]")
 {
 	using CL = eventpp::CallbackList<void(), FakeCallbackListPolicies>;
 
 	CL callbackList;
 
-	constexpr int threadCount = 256;
-	constexpr int taskCountPerThread = 1024;
+	constexpr int threadCount = test_threading::threadCount;
+	constexpr int taskCountPerThread = test_threading::insertItemsPerThread;
 	constexpr int itemCount = threadCount * taskCountPerThread;
 
 	std::vector<int> taskList(itemCount);
@@ -198,14 +202,16 @@ TEST_CASE("CallbackList, multi threading, insert")
 	std::shuffle(taskList.begin(), taskList.end(), std::mt19937(std::random_device()()));
 
 	std::vector<CL::Handle> handleList(taskList.size());
+	test_threading::Barrier appended(threadCount);
 
 	std::vector<std::thread> threadList;
 	for(int i = 0; i < threadCount; ++i) {
-		threadList.emplace_back([i, taskCountPerThread, &callbackList, &taskList, &handleList]() {
+		threadList.emplace_back([i, taskCountPerThread, &callbackList, &taskList, &handleList, &appended]() {
 			int k = i * taskCountPerThread;
 			for(; k < i * taskCountPerThread + taskCountPerThread / 2; ++k) {
 				handleList[k] = callbackList.append(taskList[k]);
 			}
+			appended.arriveAndWait();
 			int offset = 0;
 			for(; k < i * taskCountPerThread + taskCountPerThread / 2 + taskCountPerThread / 4; ++k) {
 				handleList[k] = callbackList.insert(taskList[k], handleList[offset++]);
@@ -227,4 +233,3 @@ TEST_CASE("CallbackList, multi threading, insert")
 
 	verifyDisorderedLinkedList(callbackList, compareList);
 }
-

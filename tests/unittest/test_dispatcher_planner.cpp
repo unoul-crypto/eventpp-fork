@@ -342,7 +342,7 @@ TEST_CASE("EventQueue planner uses processing arguments and owns temporary repla
 	REQUIRE(calls == std::vector<std::string> {"first!20", "second!30"});
 }
 
-TEST_CASE("EventDispatcher planner, concurrent dispatches have independent argument storage")
+TEST_CASE("EventDispatcher planner, concurrent dispatches have independent argument storage", "[thread]")
 {
 	using ED = eventpp::EventDispatcher<int, void(int &)>;
 	ED dispatcher;

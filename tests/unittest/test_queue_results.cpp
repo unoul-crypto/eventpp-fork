@@ -280,7 +280,7 @@ TEST_CASE("EventQueue results, ordinary failure cancels unprocessed batch future
 	REQUIRE(calls == 0);
 }
 
-TEST_CASE("EventQueue results, wait notification and processing on another thread")
+TEST_CASE("EventQueue results, wait notification and processing on another thread", "[thread]")
 {
 	Queue queue;
 	queue.appendListener(1, [](int n) { return n * 2; });

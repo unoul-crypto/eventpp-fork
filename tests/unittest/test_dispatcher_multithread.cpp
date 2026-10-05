@@ -14,18 +14,19 @@
 #include "test.h"
 #include "eventpp/eventdispatcher.h"
 
+#include "test_threading.h"
 #include <thread>
 #include <numeric>
 #include <random>
 #include <algorithm>
 
-TEST_CASE("EventDispatcher, multi threading, int, void (int)")
+TEST_CASE("EventDispatcher, multi threading, int, void (int)", "[thread]")
 {
 	using ED = eventpp::EventDispatcher<int, void (int)>;
 	ED dispatcher;
 
-	constexpr int threadCount = 256;
-	constexpr int eventCountPerThread = 1024 * 4;
+	constexpr int threadCount = test_threading::threadCount;
+	constexpr int eventCountPerThread = test_threading::itemsPerThread;
 	constexpr int itemCount = threadCount * eventCountPerThread;
 
 	std::vector<int> eventList(itemCount);

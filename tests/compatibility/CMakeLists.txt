@@ -1,0 +1,8 @@
+add_executable(compatibility_cxx11 fork_cxx11.cpp)
+set_target_properties(compatibility_cxx11 PROPERTIES CXX_STANDARD 11)
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+target_link_libraries(compatibility_cxx11 Threads::Threads)
+eventpp_configure_test(compatibility_cxx11)
+add_test(NAME compatibility_cxx11 COMMAND compatibility_cxx11)
+set_tests_properties(compatibility_cxx11 PROPERTIES TIMEOUT 30)

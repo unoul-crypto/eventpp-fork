@@ -1,24 +1,69 @@
 name: CI
 
-on: [push, pull_request]
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
 
 jobs:
   Test:
+    name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
-        build-type: [Release]
+        include:
+          - name: MSVC
+            os: windows-latest
+            cxx: ""
+          - name: Apple Clang
+            os: macos-latest
+            cxx: clang++
+          - name: GCC
+            os: ubuntu-24.04
+            cxx: g++-13
+          - name: Clang
+            os: ubuntu-24.04
+            cxx: clang++-18
+    env:
+      CXX: ${{ matrix.cxx }}
     steps:
-      - uses: actions/checkout@v2
-
+      - uses: actions/checkout@v7
       - name: Configure
-        run: |
-          mkdir -p build
-          cmake -DCMAKE_BUILD_TYPE="${{ matrix.build-type }}" -B build -S tests
+        run: cmake -S tests -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build tests
+        run: cmake --build build --config Release --target unittest tutorial compatibility_cxx11 --parallel 2
+      - name: Run tests
+        run: ctest --test-dir build --build-config Release --output-on-failure --no-tests=error
 
-      - name: Build Tests
-        run: cmake --build build --config "${{ matrix.build-type }}" -j
-
-      - name: Run unit tests
-        run: cd build && ctest --build-config "${{ matrix.build-type }}" --progress --verbose
+  Sanitizers:
+    name: Clang / ${{ matrix.sanitizer }} sanitizer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address, thread]
+    env:
+      CXX: clang++-18
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+      TSAN_OPTIONS: halt_on_error=1
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install sanitizer runtimes
+        run: sudo apt-get update && sudo apt-get install --yes libclang-rt-18-dev
+      - name: Configure
+        run: cmake -S tests -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DEVENTPP_TEST_SANITIZER=${{ matrix.sanitizer }}
+      - name: Build ASan tests
+        if: matrix.sanitizer == 'address'
+        run: cmake --build build --target unittest tutorial compatibility_cxx11 --parallel 2
+      - name: Build TSan tests
+        if: matrix.sanitizer == 'thread'
+        run: cmake --build build --target unittest --parallel 2
+      - name: Run ASan tests
+        if: matrix.sanitizer == 'address'
+        run: ctest --test-dir build --output-on-failure --no-tests=error
+      - name: Run TSan tests
+        if: matrix.sanitizer == 'thread'
+        run: ctest --test-dir build --label-regex threads --output-on-failure --no-tests=error

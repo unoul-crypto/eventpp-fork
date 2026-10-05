@@ -21,3 +21,6 @@ set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 target_link_libraries(${TARGET_TUTORIAL} Threads::Threads)
 
+eventpp_configure_test(${TARGET_TUTORIAL})
+add_test(NAME ${TARGET_TUTORIAL} COMMAND ${TARGET_TUTORIAL})
+set_tests_properties(${TARGET_TUTORIAL} PROPERTIES TIMEOUT 60)

@@ -281,7 +281,7 @@ TEST_CASE("EventDispatcher ordering, exceptions leave dispatcher usable")
 	REQUIRE(calls == 1);
 }
 
-TEST_CASE("EventDispatcher ordering, concurrent subscription and configuration")
+TEST_CASE("EventDispatcher ordering, concurrent subscription and configuration", "[thread]")
 {
 	Dispatcher dispatcher;
 	std::atomic<int> calls {0};

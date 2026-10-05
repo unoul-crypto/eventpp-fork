@@ -138,7 +138,7 @@ TEST_CASE("Metadata update, move-only updaters and dispatcher copies")
 	REQUIRE(copied.getListeners(1)[0].metadata.at("count") == 1);
 }
 
-TEST_CASE("Metadata update, concurrent increments do not lose updates or publish partial values")
+TEST_CASE("Metadata update, concurrent increments do not lose updates or publish partial values", "[thread]")
 {
 	Dispatcher dispatcher;
 	auto handle = dispatcher.appendListener(1, [] {}, {{"count", 0}, {"twice", 0}});

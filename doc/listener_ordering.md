@@ -30,6 +30,8 @@ Handle prependListener(const Event &, const Callback &, const ListenerMetadata &
 Handle insertListener(const Event &, const Callback &, const Handle & before,
                       const ListenerMetadata &);
 bool setListenerMetadata(const Event &, const Handle &, const ListenerMetadata &);
+template <typename Updater>
+bool updateListenerMetadata(const Event &, const Handle &, Updater &&);
 bool getListenerMetadata(const Event &, const Handle &, ListenerMetadata & output) const;
 ListenerList getListeners(const Event &) const;
 void setListenerOrdering(const Event &, const ListenerOrdering &);
@@ -80,6 +82,45 @@ not affect another copy. Pointer values inside application metadata retain ordin
 ownership semantics; replacement is not a deep copy of pointed-to objects.
 The getter reads the current stored value even when called from a selection function
 whose listener snapshot still contains an older value.
+
+## Atomic metadata updates
+
+`updateListenerMetadata(event, handle, updater)` copies the current value, calls
+`updater(ListenerMetadata &)` to edit the private copy and commits it atomically if
+the stored value is still current. If another writer has replaced it, the operation
+repeats on a fresh copy. This prevents lost read/modify/write updates without invoking
+application code under the list mutex. No equality operator or copy assignment is
+required for the metadata type. The immutable storage identity is used for validation;
+no per-listener version field is added.
+
+```cpp
+// With Policies::ListenerMetadata = std::map<std::string, int>:
+dispatcher.updateListenerMetadata(event, handle,
+    [](Dispatcher::ListenerMetadata & metadata) {
+        ++metadata["count"];
+    });
+```
+
+The updater may execute multiple times. Make it a repeatable transformation of the
+copy and avoid external side effects that must happen exactly once. Calling getters,
+dispatching nested events and editing other subscriptions is allowed. Unconditionally
+writing this same subscription from the updater would create a new conflict on every
+attempt. Under sustained contention there is no bounded retry/progress guarantee.
+
+The method returns false for a missing event or invalid/foreign/removed/expired handle.
+An initially invalid handle never invokes the updater. Removal during an attempt can
+also return false after the updater has run; its edited copy is discarded. Copy/allocation
+or updater exceptions propagate and this operation commits nothing. Changes made by
+other writers or by explicit nested calls are not rolled back. A successful commit
+keeps handle identity and list position; existing listener snapshots retain their values.
+
+Pointer members retain normal copy/sharing semantics. Atomic replacement covers the
+metadata value, not mutation of shared pointees. `setListenerMetadata` still replaces
+the entire value and can supersede an earlier successful update.
+`EventQueue` inherits the method; standalone `CallbackList` provides
+`updateListenerMetadata(handle, updater)`. Move-only updater objects are supported.
+
+## Inspecting listeners
 
 `getListeners(event)` returns a snapshot of all currently registered listeners for that
 event. Each `ListenerInfo` contains its `handle` and a copy of its `metadata`. The order
@@ -267,5 +308,7 @@ storage; each entry with replacements allocates owned storage for its tuple. Pla
 adds no fields to callback nodes and does not create plans when ordinary ordering is used.
 Updating metadata copies the supplied value and checks handle membership in `O(N)` time.
 Reading metadata also checks membership in `O(N)` time, followed by one assignment.
+Atomic updating checks membership once in `O(N)` and validates/commits each attempt in
+constant time under the mutex, plus the costs of copying metadata and running the updater.
 `getListeners` traverses the list in `O(N)` time and allocates its snapshot vector plus
 any storage needed to copy metadata. It uses the same reserved snapshot builder as selection.

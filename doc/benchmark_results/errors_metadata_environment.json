@@ -1,0 +1,16 @@
+{
+  "date_utc": "2026-10-05T18:36:50.199160+00:00",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "cpu": "AMD64 Family 23 Model 8 Stepping 2, AuthenticAMD",
+  "compiler": "compiler=MSVC 193833145",
+  "baseline": "17ff3a72b29863dcf873b3955cf0f8a1147e2140",
+  "baseline_has_fork_api": true,
+  "fork_commit": "17ff3a72b29863dcf873b3955cf0f8a1147e2140",
+  "fork_headers_dirty": true,
+  "fork_header_diff_sha256": "4b213c2e0a0fa9bee8f595336fabac7c7398a3f363a2f49f9c6175551640d8f8",
+  "logical_cpu": 0,
+  "rounds": 4,
+  "samples_per_case": 20,
+  "build_type": "Release",
+  "pointer_bits": 64
+}

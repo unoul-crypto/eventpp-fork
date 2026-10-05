@@ -29,9 +29,12 @@ individual callback arguments, and snapshot semantics.
 Metadata can be replaced without reconnecting a listener using `setListenerMetadata`.
 Use `getListenerMetadata(event, handle, output)` to read a copy of its current metadata.
 Use `getListeners(event)` to obtain all registered handles and metadata in callback list order.
+Use `updateListenerMetadata(event, handle, updater)` for an atomic read/modify/write change.
 
 Non-void handler returns can be collected with `dispatchWithResults` and combined by
 a per-event aggregator. See [handler results](return_results.md).
+Per-event exception policies and reports (including void handlers) are described in
+[listener exception handling](listener_errors.md).
 
 <a id="a2_2"></a>
 ## API reference

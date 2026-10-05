@@ -26,6 +26,9 @@ For queued handler returns and aggregation, see [enqueueWithResults](queue_resul
 Listener metadata can be changed with the inherited `setListenerMetadata` method.
 The inherited `getListenerMetadata(event, handle, output)` method reads its current value.
 The inherited `getListeners(event)` method snapshots registered listeners without processing the queue.
+Atomic metadata updates use `updateListenerMetadata(event, handle, updater)`.
+For `enqueueWithReport` and per-event exception policies, see
+[listener exception handling](listener_errors.md).
 
 <a id="a2_2"></a>
 ## API reference

@@ -19,6 +19,10 @@
 
 CallbackList is the fundamental class in eventpp. The other classes EventDispatcher and EventQueue are built on CallbackList.  
 
+Listener metadata can be read or replaced with `getListenerMetadata` and
+`setListenerMetadata`. Use `updateListenerMetadata(handle, updater)` for an atomic
+read/modify/write change. See [listener metadata](listener_ordering.md).
+
 CallbackList holds a list of callbacks. At the time of the call, CallbackList simply invokes each callback one by one. Consider CallbackList as the signal/slot system in Qt, or the callback function pointer in some Windows APIs (such as lpCompletionRoutine in `ReadFileEx`).  
 The *callback* can be any callback target -- functions, pointers to functions, , pointers to member functions, lambda expressions, and function objects.  
 

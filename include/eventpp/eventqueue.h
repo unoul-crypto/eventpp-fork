@@ -183,6 +183,20 @@ public:
 	auto enqueueWithResults(A && ...args)
 		-> typename std::enable_if<sizeof...(A) == sizeof...(Args) && CanCollectReturn<ReturnType>::value, ResultFuture>::type
 	{
+		return enqueueWithReport(std::forward<A>(args)...);
+	}
+
+	template <typename T, typename ...A>
+	auto enqueueWithResults(T && first, A && ...args)
+		-> typename std::enable_if<sizeof...(A) == sizeof...(Args) && CanCollectReturn<ReturnType>::value, ResultFuture>::type
+	{
+		return enqueueWithReport(std::forward<T>(first), std::forward<A>(args)...);
+	}
+
+	template <typename ...A>
+	auto enqueueWithReport(A && ...args)
+		-> typename std::enable_if<sizeof...(A) == sizeof...(Args), ResultFuture>::type
+	{
 		static_assert(super::ArgumentPassingMode::canIncludeEventType, "Event type should be included in enqueue arguments.");
 		using GetEvent = typename SelectGetEvent<Policies_, EventType_, HasFunctionGetEvent<Policies_, A...>::value>::Type;
 		auto state = std::make_shared<QueuedResultState>();
@@ -194,8 +208,8 @@ public:
 	}
 
 	template <typename T, typename ...A>
-	auto enqueueWithResults(T && first, A && ...args)
-		-> typename std::enable_if<sizeof...(A) == sizeof...(Args) && CanCollectReturn<ReturnType>::value, ResultFuture>::type
+	auto enqueueWithReport(T && first, A && ...args)
+		-> typename std::enable_if<sizeof...(A) == sizeof...(Args), ResultFuture>::type
 	{
 		static_assert(super::ArgumentPassingMode::canExcludeEventType, "Event type should not be included in callback arguments.");
 		using GetEvent = typename SelectGetEvent<Policies_, EventType_, HasFunctionGetEvent<Policies_, T &&, A...>::value>::Type;
@@ -552,26 +566,18 @@ protected:
 		}
 	}
 
-	template <typename T, size_t ...Indexes, typename R = ReturnType>
-	typename std::enable_if<CanCollectReturn<R>::value, void>::type
-	doDispatchQueuedResult(T & item, IndexSequence<Indexes...>)
+	template <typename T, size_t ...Indexes>
+	void doDispatchQueuedResult(T & item, IndexSequence<Indexes...>)
 	{
 		auto state = item.resultState;
 		if(state->started.exchange(true)) { return; }
 		auto promise = std::move(state->promise);
 		try {
-			promise->set_value(this->directDispatchWithResults(item.event, std::get<Indexes>(item.arguments)...));
+			promise->set_value(this->directDispatchWithReport(item.event, std::get<Indexes>(item.arguments)...));
 		}
 		catch(...) {
 			promise->set_exception(std::current_exception());
 		}
-	}
-
-	template <typename T, size_t ...Indexes, typename R = ReturnType>
-	typename std::enable_if<! CanCollectReturn<R>::value, void>::type
-	doDispatchQueuedResult(T & item, IndexSequence<Indexes...>)
-	{
-		this->directDispatch(item.event, std::get<Indexes>(item.arguments)...);
 	}
 
 	template <typename F, typename T, size_t ...Indexes>

@@ -39,6 +39,8 @@ install the headers from this fork.
 
 - Attach a custom dictionary to each listener; read or replace it without reconnecting
   using `getListenerMetadata` and `setListenerMetadata`.
+- Apply atomic read/modify/write changes with `updateListenerMetadata`; its updater
+  runs outside internal locks and retries on conflicting writes.
 - Inspect registered listener handles and metadata with `getListeners(event)` snapshots.
 - Set an event's `setListenerOrdering` function to select and order listeners using
   their metadata and the event arguments. Omitted listeners are skipped for that dispatch.
@@ -47,6 +49,9 @@ install the headers from this fork.
   An optional per-event `setResultAggregator` produces an additional aggregate value.
 - Call `EventQueue::enqueueWithResults` to obtain a `std::future<DispatchResult>` that
   completes when the event is processed. Handler exceptions are delivered through the future.
+- Choose `setListenerExceptionPolicy(event, ListenerExceptionPolicy::Continue)` to run
+  remaining listeners after a failure. Reports contain successful values and errors with
+  their handles. `dispatchWithReport` and `enqueueWithReport` also support void handlers.
 
 Selection, plans and result APIs apply to `EventDispatcher` and `EventQueue`.
 Standalone `CallbackList` supports listener metadata. Heterogeneous classes retain
@@ -55,6 +60,7 @@ and ignore handler returns. Ordering and planners are alternative selection mode
 
 See [listener metadata and plans](doc/listener_ordering.md),
 [return values and aggregation](doc/return_results.md),
+[listener exception handling](doc/listener_errors.md),
 [queued results](doc/queue_results.md), and
 [measured overhead versus upstream](doc/fork_overhead.md), and
 [subsequent optimization results](doc/optimization_results.md).
@@ -201,11 +207,9 @@ int main() {
     dispatcher.appendListener(1, [](int n) { return n * 3; },
                               {{"enabled", 1}, {"factor", 1}});
 
-    Dispatcher::ListenerMetadata metadata;
-    if(dispatcher.getListenerMetadata(1, first, metadata)) {
-        metadata["factor"] = 3;
-        dispatcher.setListenerMetadata(1, first, metadata);
-    }
+    dispatcher.updateListenerMetadata(1, first, [](Dispatcher::ListenerMetadata & metadata) {
+        ++metadata["factor"]; // Atomic change from 2 to 3.
+    });
 
     dispatcher.setListenerPlanner(1,
         [](const Dispatcher::ListenerList & listeners, const int & n) {
@@ -255,6 +259,7 @@ queue before calling `future.get()` on the same thread, or process it on a worke
 * Fork extensions
     * [Listener metadata, ordering and per-handler arguments](doc/listener_ordering.md)
     * [Handler return collection and aggregation](doc/return_results.md)
+    * [Listener exceptions and dispatch reports](doc/listener_errors.md)
     * [Queued result futures and cancellation](doc/queue_results.md)
     * [Overhead comparison with upstream](doc/fork_overhead.md)
     * [Listener selection and result-vector optimization](doc/optimization_results.md)

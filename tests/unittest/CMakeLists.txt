@@ -9,6 +9,8 @@ set(SRC_TEST
 	test_dispatcher_ordering.cpp
 	test_dispatcher_planner.cpp
 	test_dispatcher_results.cpp
+	test_listener_exceptions.cpp
+	test_metadata_update.cpp
 	test_listener_metadata.cpp
 	test_dispatcher_ctors.cpp
 	test_dispatcher_multithread.cpp

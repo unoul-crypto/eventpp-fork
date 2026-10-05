@@ -310,6 +310,37 @@ public:
 		return true;
 	}
 
+	template <typename Updater>
+	bool updateListenerMetadata(const Handle & handle, Updater && updater)
+	{
+		NodePtr node;
+		std::shared_ptr<const ListenerMetadata> expected;
+		{
+			std::lock_guard<Mutex> lockGuard(mutex);
+			node = doFindMemberNode(handle);
+			if(! node) { return false; }
+			expected = node->metadata;
+		}
+		for(;;) {
+			auto updated = expected ? std::make_shared<ListenerMetadata>(*expected)
+				: std::make_shared<ListenerMetadata>();
+			updater(*updated);
+			std::shared_ptr<const ListenerMetadata> stored = std::move(updated);
+			std::shared_ptr<const ListenerMetadata> latest;
+			{
+				std::lock_guard<Mutex> lockGuard(mutex);
+				if(node->counter == removedCounter) { return false; }
+				if(node->metadata == expected) {
+					stored.swap(node->metadata);
+					return true;
+				}
+				latest = node->metadata;
+			}
+			// Copies, updater calls and destruction of superseded values stay outside mutex.
+			expected = std::move(latest);
+		}
+	}
+
 	bool remove(const Handle & handle)
 	{
 		// Disable this assertion because it's too slow in debug mode.

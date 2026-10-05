@@ -2,7 +2,10 @@
 
 `EventQueue::enqueueWithResults` queues an event and returns a
 `std::future<DispatchResult>`. The result has the same `results`, `handles` and optional
-`aggregate` fields as [synchronous result collection](return_results.md).
+`aggregate` fields as [synchronous result collection](return_results.md), plus handler
+`errors` when the event uses the opt-in `Continue` policy. See
+[listener exception handling](listener_errors.md). `enqueueWithReport` uses the same
+future and lifetime rules and also supports `void` and non-ownable returns.
 
 ## C++11 example
 
@@ -54,11 +57,15 @@ allocate that state. Each queued-event record has an additional shared pointer f
 
 ## Exceptions and cancellation
 
-For result-bearing events, callback, filter, selector/planner and aggregator exceptions
-are stored in the future. `future.get` rethrows the original exception. Processing can
-continue with subsequent queued events, and no partial result is returned for a failed event.
+By default, for result-bearing events, callback, filter, selector/planner and aggregator
+exceptions are stored in the future. `future.get` rethrows the original exception. With
+the event's opt-in `Continue` policy, only handler failures become report `errors` and
+processing invokes the remaining handlers; infrastructure failures still fail the future.
+Processing can continue with subsequent queued events, and no partial result is returned
+for a failed event.
 
-For ordinary events, exceptions still propagate from the process method. If such an
+For ordinary events, exceptions still propagate from the process method, except for
+handler failures discarded by the opt-in `Continue` policy. If such an
 exception discards a processing batch, any unprocessed result-bearing events in that
 batch are canceled and their futures complete with `std::future_errc::broken_promise`.
 Exceptions from processing predicates also propagate and cancel their abandoned batch.

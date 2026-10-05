@@ -37,6 +37,8 @@ void example() {
 - `ResultAggregator`: `std::function<AggregationResult(const ListenerResults &)>`.
 - `DispatchResult`: owns `ListenerResults results`, `std::vector<Handle> handles`,
   and `std::unique_ptr<AggregationResult> aggregate`.
+  It also contains `std::vector<ListenerError> errors`; each error has `handle` and
+  `std::exception_ptr exception`. See [listener exception policies](listener_errors.md).
 
 ```cpp
 void setResultAggregator(const Event &, const ResultAggregator &);
@@ -98,9 +100,11 @@ and its aggregate remain available to the caller.
 - Copying a dispatcher copies its aggregator callable, just as its selection callable.
   Moving and swapping transfer aggregator configuration with the listeners.
 
-Callback, selection, collection-allocation, cancellation-policy and aggregator exceptions
-propagate normally. If processing throws, the aggregator is not called, collected values
-are cleaned up, and no partial `DispatchResult` is returned. If the aggregator throws,
+By default, callback, selection, collection-allocation, cancellation-policy and aggregator
+exceptions propagate normally. With the opt-in per-event `Continue` policy, handler
+failures are recorded in `errors` and invocation continues; aggregation receives only
+successful values. Other failures retain propagation. If processing throws, the aggregator
+is not called, collected values are cleaned up, and no partial `DispatchResult` is returned. If the aggregator throws,
 its exception propagates and collected values are also cleaned up. The dispatcher remains
 usable; application callback side effects are not undone.
 

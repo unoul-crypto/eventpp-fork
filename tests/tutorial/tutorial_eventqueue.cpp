@@ -19,6 +19,41 @@
 
 #include <iostream>
 #include <thread>
+#include <stdexcept>
+
+TEST_CASE("EventQueue tutorial, atomic metadata updates and error reports")
+{
+	struct Policies { using ListenerMetadata = std::map<std::string, int>; };
+	using Queue = eventpp::EventQueue<int, int(int), Policies>;
+	Queue queue;
+	auto successful = queue.appendListener(1, [](int value) { return value; }, {{"factor", 1}});
+	queue.appendListener(1, [](int) -> int { throw std::runtime_error("handler failed"); }, {{"factor", 1}});
+	REQUIRE(queue.updateListenerMetadata(1, successful, [](Queue::ListenerMetadata & metadata) {
+		++metadata["factor"];
+	}));
+	queue.setListenerPlanner(1, [](const Queue::ListenerList & listeners, const int & value) {
+		Queue::ListenerPlan plan;
+		for(const auto & listener : listeners) { plan.add(listener.handle, value * listener.metadata.at("factor")); }
+		return plan;
+	});
+	queue.setListenerExceptionPolicy(1, eventpp::ListenerExceptionPolicy::Continue);
+	auto future = queue.enqueueWithReport(1, 3);
+	REQUIRE(queue.process());
+	auto report = future.get();
+	REQUIRE(report.results == std::vector<int> {6});
+	REQUIRE(report.errors.size() == 1);
+	REQUIRE_THROWS_AS(std::rethrow_exception(report.errors[0].exception), std::runtime_error);
+
+	eventpp::EventQueue<int, void()> notifications;
+	int completed = 0;
+	notifications.appendListener(1, [] { throw std::runtime_error("notification failed"); });
+	notifications.appendListener(1, [&] { ++completed; });
+	notifications.setListenerExceptionPolicy(1, eventpp::ListenerExceptionPolicy::Continue);
+	auto notification = notifications.enqueueWithReport(1);
+	REQUIRE(notifications.process());
+	REQUIRE(notification.get().errors.size() == 1);
+	REQUIRE(completed == 1);
+}
 
 TEST_CASE("EventQueue tutorial, future results and updated listener metadata")
 {

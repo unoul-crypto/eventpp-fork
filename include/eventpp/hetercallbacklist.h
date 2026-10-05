@@ -144,7 +144,12 @@ public:
 	}
 
 	bool empty() const {
-		for(const auto & callbackList : callbackListList) {
+		decltype(callbackListList) lists;
+		{
+			std::lock_guard<Mutex> lockGuard(callbackListListMutex);
+			lists = callbackListList;
+		}
+		for(const auto & callbackList : lists) {
 			if(callbackList && ! callbackList->empty()) {
 				return false;
 			}
@@ -211,7 +216,11 @@ public:
 
 	bool remove(const Handle & handle)
 	{
-		auto callbackList = callbackListList[handle.index];
+		std::shared_ptr<HomoCallbackListTypeBase> callbackList;
+		{
+			std::lock_guard<Mutex> lockGuard(callbackListListMutex);
+			callbackList = callbackListList[handle.index];
+		}
 		if(callbackList) {
 			return callbackList->doRemove(handle);
 		}
@@ -276,12 +285,9 @@ private:
 	{
 		static_assert(PrototypeInfo::index >= 0, "Can't find invoker for the given argument types.");
 
+		std::lock_guard<Mutex> lockGuard(callbackListListMutex);
 		if(! callbackListList[PrototypeInfo::index]) {
-			std::lock_guard<Mutex> lockGuard(callbackListListMutex);
-
-			if(! callbackListList[PrototypeInfo::index]) {
-				callbackListList[PrototypeInfo::index] = std::make_shared<HomoCallbackListType<typename PrototypeInfo::Prototype> >();
-			}
+			callbackListList[PrototypeInfo::index] = std::make_shared<HomoCallbackListType<typename PrototypeInfo::Prototype> >();
 		}
 
 		return std::static_pointer_cast<HomoCallbackListType<typename PrototypeInfo::Prototype> >(callbackListList[PrototypeInfo::index]);

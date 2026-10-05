@@ -77,7 +77,8 @@ private:
 		NodePtr previous;
 		NodePtr next;
 		Callback_ callback;
-		Counter counter;
+		// Traversal reads the removal marker outside the list mutex.
+		typename Threading::template Atomic<Counter> counter;
 		std::shared_ptr<const Metadata_> metadata;
 	};
 
@@ -174,11 +175,7 @@ public:
 	}
 
 	bool empty() const {
-		// Don't lock the mutex for performance reason.
-		// !head still works even when the underlying raw pointer is garbled (for other thread is writting to head)
-		// And empty() doesn't guarantee the list is still empty after the function returned.
-		//std::lock_guard<Mutex> lockGuard(mutex);
-
+		std::lock_guard<Mutex> lockGuard(mutex);
 		return ! head;
 	}
 
@@ -329,7 +326,7 @@ public:
 			std::shared_ptr<const ListenerMetadata> latest;
 			{
 				std::lock_guard<Mutex> lockGuard(mutex);
-				if(node->counter == removedCounter) { return false; }
+				if(node->counter.load(std::memory_order_relaxed) == removedCounter) { return false; }
 				if(node->metadata == expected) {
 					stored.swap(node->metadata);
 					return true;
@@ -422,7 +419,8 @@ public:
 		const Counter counter = currentCounter.load(std::memory_order_acquire);
 
 		while(node) {
-			if(node->counter != removedCounter && counter >= node->counter) {
+			const Counter nodeCounter = node->counter.load(std::memory_order_relaxed);
+			if(nodeCounter != removedCounter && counter >= nodeCounter) {
 				node->callback(args...);
 				if(! CanContinueInvoking::canContinueInvoking(args...)) {
 					break;
@@ -526,7 +524,7 @@ private:
 			{
 				std::lock_guard<Mutex> lockGuard(mutex);
 				node = handle.lock();
-				if(node && node->counter == removedCounter) {
+				if(node && node->counter.load(std::memory_order_relaxed) == removedCounter) {
 					node.reset();
 				}
 			}
@@ -551,7 +549,8 @@ private:
 		const Counter counter = currentCounter.load(std::memory_order_acquire);
 
 		while(node) {
-			if(node->counter != removedCounter && counter >= node->counter) {
+			const Counter nodeCounter = node->counter.load(std::memory_order_relaxed);
+			if(nodeCounter != removedCounter && counter >= nodeCounter) {
 				if(! f(node)) {
 					return false;
 				}
@@ -612,7 +611,7 @@ private:
 		// Mark it as deleted, this must be before the assignment of head and tail below,
 		// because node can be a reference to head or tail, and after the assignment, node
 		// can be null pointer.
-		node->counter = removedCounter;
+		node->counter.store(removedCounter, std::memory_order_relaxed);
 
 		if(head == node) {
 			head = node->next;
@@ -645,7 +644,7 @@ private:
 				std::lock_guard<Mutex> lockGuard(mutex);
 				NodePtr node = head;
 				while(node) {
-					node->counter = 1;
+					node->counter.store(1, std::memory_order_relaxed);
 					node = node->next;
 				}
 			}

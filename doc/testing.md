@@ -22,7 +22,11 @@ the GCC/Clang jobs provide the strict C++11 check.
 Thread cases include callback-list registration/removal, dispatch and queue
 processing, selection configuration changes, independent argument plans and
 result vectors, concurrent metadata readers/writers, exception-policy changes,
-and competing dispatches of a queued report. Assertions run after worker joins;
+and competing dispatches of a queued report. Regression cases tagged
+`[race-regression]` additionally overlap ordinary traversal with removal, query
+list emptiness during mutation, and race queue insertion/recycling against all
+processing modes, peek/take, cancellation and wait predicates. They cover both
+ordinary and heterogeneous queues, in-flight emptiness and callback reentry. Assertions run after worker joins;
 test-owned shared state uses explicit synchronization. The thread job fails on
 the first reported race and fails if no tests match its CTest label.
 

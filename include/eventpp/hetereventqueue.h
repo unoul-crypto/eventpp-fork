@@ -141,18 +141,18 @@ public:
 
 	bool emptyQueue() const
 	{
-		return queueList.empty() && (queueEmptyCounter.load(std::memory_order_acquire) == 0);
+		std::lock_guard<Mutex> queueListLock(queueListMutex);
+		return doEmptyQueueLocked();
 	}
 
 	void clearEvents()
 	{
+		std::unique_lock<Mutex> queueListAccess(queueListMutex);
 		if(! queueList.empty()) {
 			BufferedItemList tempList;
 
-			{
-				std::lock_guard<Mutex> queueListLock(queueListMutex);
-				std::swap(queueList, tempList);
-			}
+			std::swap(queueList, tempList);
+			queueListAccess.unlock();
 
 			if(! tempList.empty()) {
 				for(auto & item : tempList) {
@@ -167,6 +167,7 @@ public:
 
 	bool process()
 	{
+		std::unique_lock<Mutex> queueListAccess(queueListMutex);
 		if(! queueList.empty()) {
 			BufferedItemList tempList;
 
@@ -174,10 +175,8 @@ public:
 			// even though queueList is swapped to empty.
 			CounterGuard<decltype(queueEmptyCounter)> counterGuard(queueEmptyCounter);
 
-			{
-				std::lock_guard<Mutex> queueListLock(queueListMutex);
-				std::swap(queueList, tempList);
-			}
+			std::swap(queueList, tempList);
+			queueListAccess.unlock();
 
 			if(! tempList.empty()) {
 				for(auto & item : tempList) {
@@ -197,6 +196,7 @@ public:
 
 	bool processOne()
 	{
+		std::unique_lock<Mutex> queueListAccess(queueListMutex);
 		if(! queueList.empty()) {
 			BufferedItemList tempList;
 
@@ -204,12 +204,8 @@ public:
 			// even though queueList is swapped to empty.
 			CounterGuard<decltype(queueEmptyCounter)> counterGuard(queueEmptyCounter);
 
-			{
-				std::lock_guard<Mutex> queueListLock(queueListMutex);
-				if(! queueList.empty()) {
-					tempList.splice(tempList.end(), queueList, queueList.begin());
-				}
-			}
+			tempList.splice(tempList.end(), queueList, queueList.begin());
+			queueListAccess.unlock();
 
 			if(! tempList.empty()) {
 				auto & item = tempList.front();
@@ -229,10 +225,6 @@ public:
 	template <typename F>
 	bool processIf(F && func)
 	{
-		if(queueList.empty()) {
-			return false;
-		}
-
 		using PrototypeInfo = FindPrototypeByCallable<PrototypeList, F>;
 		return doProcessIf<PrototypeInfo>(std::forward<F>(func));
 	}
@@ -241,7 +233,7 @@ public:
 	{
 		std::unique_lock<Mutex> queueListLock(queueListMutex);
 		queueListConditionVariable.wait(queueListLock, [this]() -> bool {
-			return doCanProcess();
+			return ! doEmptyQueueLocked() && doCanNotifyQueueAvailable();
 		});
 	}
 
@@ -250,18 +242,13 @@ public:
 	{
 		std::unique_lock<Mutex> queueListLock(queueListMutex);
 		return queueListConditionVariable.wait_for(queueListLock, duration, [this]() -> bool {
-			return doCanProcess();
+			return ! doEmptyQueueLocked() && doCanNotifyQueueAvailable();
 		});
 	}
 
 	using super::dispatch;
 
 private:
-	bool doCanProcess() const
-	{
-		return ! emptyQueue() && doCanNotifyQueueAvailable();
-	}
-
 	bool doCanNotifyQueueAvailable() const
 	{
 		return queueNotifyCounter.load(std::memory_order_acquire) == 0;
@@ -292,6 +279,9 @@ private:
 	auto doProcessIf(F && func)
 		-> typename std::enable_if<(PrototypeInfo::index >= 0), bool>::type
 	{
+		std::unique_lock<Mutex> queueListAccess(queueListMutex);
+		if(queueList.empty()) { return false; }
+
 		BufferedItemList tempList;
 		BufferedItemList idleList;
 
@@ -299,10 +289,8 @@ private:
 		// even though queueList is swapped to empty.
 		CounterGuard<decltype(queueEmptyCounter)> counterGuard(queueEmptyCounter);
 
-		{
-			std::lock_guard<Mutex> queueListLock(queueListMutex);
-			std::swap(queueList, tempList);
-		}
+		std::swap(queueList, tempList);
+		queueListAccess.unlock();
 
 		if(! tempList.empty()) {
 			for(auto it = tempList.begin(); it != tempList.end(); ) {
@@ -388,7 +376,7 @@ private:
 			typename PrototypeInfo::ArgsTuple(std::forward<T>(first), std::forward<Args>(args)...)
 		));
 
-		if(doCanProcess()) {
+		if(doCanNotifyQueueAvailable()) {
 			queueListConditionVariable.notify_one();
 		}
 	}
@@ -411,7 +399,7 @@ private:
 			typename PrototypeInfo::ArgsTuple(std::forward<Args>(args)...)
 		));
 
-		if(doCanProcess()) {
+		if(doCanNotifyQueueAvailable()) {
 			queueListConditionVariable.notify_one();
 		}
 	}
@@ -420,12 +408,10 @@ private:
 	void doEnqueueItem(T && item)
 	{
 		BufferedItemList tempList;
-		if(! freeList.empty()) {
-			{
-				std::lock_guard<Mutex> queueListLock(freeListMutex);
-				if(! freeList.empty()) {
-					tempList.splice(tempList.end(), freeList, freeList.begin());
-				}
+		{
+			std::lock_guard<Mutex> freeListLock(freeListMutex);
+			if(! freeList.empty()) {
+				tempList.splice(tempList.end(), freeList, freeList.begin());
 			}
 		}
 
@@ -441,6 +427,12 @@ private:
 	}
 
 private:
+	// Caller holds queueListMutex; wait predicates must not lock it again.
+	bool doEmptyQueueLocked() const
+	{
+		return queueList.empty() && (queueEmptyCounter.load(std::memory_order_acquire) == 0);
+	}
+
 	mutable ConditionVariable queueListConditionVariable;
 	typename Threading::template Atomic<int> queueEmptyCounter;
 	typename Threading::template Atomic<int> queueNotifyCounter;

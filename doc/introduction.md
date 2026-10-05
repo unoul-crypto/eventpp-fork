@@ -71,8 +71,26 @@ queue.process();
 ```
 
 ## Thread safety
-All classes are thread-safe. You can call all public functions from multiple threads at the same time. If it fails, please report a bug.  
-The library guarantees the integration of each single function call, such as `EventDispatcher::appendListener`, `CallbackList::remove`, but it does not guarantee the order of operations in multiple threads. For example, if a thread is dispatching an event, another thread removes a listener at the same time, the removed listener may be still triggered after it's removed.  
+The default `MultipleThreading` policy synchronizes listener registration/removal,
+traversal, metadata access, configuration and queue operations. `SingleThreading`
+disables synchronization and requires calls from a single thread or external
+locking. Copy, move, assignment, swap and destruction require exclusive access to
+the affected objects; they must not overlap other operations on those objects.
+
+Handlers, ordering/planning functions, aggregators and metadata updaters execute
+outside internal locks. Concurrent dispatches can call the same function at the
+same time; user code must synchronize any shared mutable state, including objects
+referenced by event arguments. Metadata and configuration snapshots are local to
+each dispatch. `updateListenerMetadata` may retry the updater after a conflicting
+update, so the updater must tolerate repeated calls.
+
+Operations from different threads have no guaranteed global order. Removing a
+listener does not wait for a handler already selected for invocation to finish.
+`empty()` and `emptyQueue()` are synchronized observations, not promises about
+subsequent operations. `emptyQueue()` also accounts for batches currently being
+processed. Queued reports/results share an atomic completion claim, so processing,
+peek-copy dispatch and cancellation compete for one completion per queued event.
+
 
 ## Exception safety
 

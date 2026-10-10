@@ -104,6 +104,9 @@ public:
 	using AggregationResult = typename std::decay<typename SelectAggregationResult<Policies_,
 		HasTypeAggregationResult<Policies_>::value, ListenerResult>::Type>::type;
 	using ResultAggregator = std::function<AggregationResult(const ListenerResults &)>;
+	using ResultContinuation = std::function<bool(const Handle &, const ListenerResult &,
+		typename std::add_lvalue_reference<typename std::add_const<
+			typename std::remove_reference<Args>::type>::type>::type...)>;
 	using ExceptionPolicy = eventpp::ListenerExceptionPolicy;
 
 	struct ListenerError
@@ -118,6 +121,7 @@ public:
 		std::vector<Handle> handles;
 		std::unique_ptr<AggregationResult> aggregate;
 		std::vector<ListenerError> errors;
+		bool stoppedByResult = false;
 	};
 
 	class ListenerPlan
@@ -129,7 +133,8 @@ public:
 		{
 			virtual ~ArgumentsBase() = default;
 			virtual bool invoke(const CallbackList_ & listeners, Callback & callback,
-				const Handle & handle, DispatchResult * results, ExceptionPolicy exceptionPolicy) = 0;
+				const Handle & handle, DispatchResult * results, ExceptionPolicy exceptionPolicy,
+				const ResultContinuation * continuation) = 0;
 		};
 
 		template <typename Tuple>
@@ -141,9 +146,10 @@ public:
 			}
 
 			bool invoke(const CallbackList_ & listeners, Callback & callback,
-				const Handle & handle, DispatchResult * results, ExceptionPolicy exceptionPolicy) override
+				const Handle & handle, DispatchResult * results, ExceptionPolicy exceptionPolicy,
+				const ResultContinuation * continuation) override
 			{
-				return ThisType::doInvokePlannedArguments(listeners, callback, handle, results, exceptionPolicy, values,
+				return ThisType::doInvokePlannedArguments(listeners, callback, handle, results, exceptionPolicy, continuation, values,
 					typename MakeIndexSequence<sizeof...(Args)>::Type());
 			}
 
@@ -211,6 +217,7 @@ private:
 	struct ListenerConfiguration
 	{
 		std::shared_ptr<ListenerSelection> selection;
+		std::shared_ptr<ResultContinuation> continuation;
 		ExceptionPolicy exceptionPolicy = ExceptionPolicy::Propagate;
 	};
 	using OrderingMap = typename SelectMap<Event, ListenerConfiguration,
@@ -346,7 +353,7 @@ public:
 			auto it = listenerOrderingMap.find(event);
 			if(it != listenerOrderingMap.end()) {
 				removed = std::move(it->second.selection);
-				if(it->second.exceptionPolicy == ExceptionPolicy::Propagate) {
+				if(it->second.exceptionPolicy == ExceptionPolicy::Propagate && !it->second.continuation) {
 					listenerOrderingMap.erase(it);
 				}
 			}
@@ -359,11 +366,38 @@ public:
 		auto it = listenerOrderingMap.find(event);
 		if(policy == ExceptionPolicy::Propagate) {
 			if(it != listenerOrderingMap.end()) {
-				if(it->second.selection) { it->second.exceptionPolicy = policy; }
+				if(it->second.selection || it->second.continuation) { it->second.exceptionPolicy = policy; }
 				else { listenerOrderingMap.erase(it); }
 			}
 		}
 		else { listenerOrderingMap[event].exceptionPolicy = policy; }
+	}
+
+	template <typename R = ReturnType>
+	typename std::enable_if<CanCollectReturn<R>::value && std::is_same<R, ReturnType>::value, void>::type
+	setResultContinuation(const Event & event, const ResultContinuation & continuation)
+	{
+		if(! continuation) { clearResultContinuation(event); return; }
+		auto stored = std::make_shared<ResultContinuation>(continuation);
+		{
+			std::lock_guard<Mutex> lockGuard(listenerMutex);
+			stored.swap(listenerOrderingMap[event].continuation);
+		}
+	}
+
+	void clearResultContinuation(const Event & event)
+	{
+		std::shared_ptr<ResultContinuation> removed;
+		{
+			std::lock_guard<Mutex> lockGuard(listenerMutex);
+			auto it = listenerOrderingMap.find(event);
+			if(it != listenerOrderingMap.end()) {
+				removed = std::move(it->second.continuation);
+				if(! it->second.selection && it->second.exceptionPolicy == ExceptionPolicy::Propagate) {
+					listenerOrderingMap.erase(it);
+				}
+			}
+		}
 	}
 
 	template <typename R = ReturnType>
@@ -575,6 +609,7 @@ private:
 
 		const CallbackList_ * callableList = nullptr;
 		std::shared_ptr<ListenerSelection> selection;
+		std::shared_ptr<ResultContinuation> continuation;
 		ExceptionPolicy exceptionPolicy = ExceptionPolicy::Propagate;
 		{
 			std::lock_guard<Mutex> lockGuard(listenerMutex);
@@ -586,6 +621,7 @@ private:
 				auto orderIt = listenerOrderingMap.find(e);
 				if(orderIt != listenerOrderingMap.end()) {
 					selection = orderIt->second.selection;
+					continuation = orderIt->second.continuation;
 					exceptionPolicy = orderIt->second.exceptionPolicy;
 				}
 			}
@@ -599,8 +635,8 @@ private:
 					callableList->doInvokeSelected(listeners, plan.invocations,
 						[](const typename ListenerPlan::Invocation & call) -> const Handle & { return call.handle; },
 						[&](Callback & callback, typename ListenerPlan::Invocation & call) {
-							return call.arguments ? call.arguments->invoke(*callableList, callback, call.handle, results, exceptionPolicy)
-								: doInvokeWithResults(*callableList, callback, call.handle, results, exceptionPolicy, args...);
+							return call.arguments ? call.arguments->invoke(*callableList, callback, call.handle, results, exceptionPolicy, continuation.get())
+								: doInvokeWithResults(*callableList, callback, call.handle, results, exceptionPolicy, continuation.get(), args...);
 						});
 				}
 				else {
@@ -609,17 +645,17 @@ private:
 					callableList->doInvokeSelected(listeners, order,
 						[](const Handle & handle) -> const Handle & { return handle; },
 						[&](Callback & callback, const Handle & handle) {
-							return doInvokeWithResults(*callableList, callback, handle, results, exceptionPolicy, args...);
+							return doInvokeWithResults(*callableList, callback, handle, results, exceptionPolicy, continuation.get(), args...);
 						});
 				}
 			}
-			else if(results || exceptionPolicy == ExceptionPolicy::Continue) {
+			else if(results || continuation || exceptionPolicy == ExceptionPolicy::Continue) {
 				// A capacity hint only: traversal retains its normal mutation semantics.
 				if(results && CanCollectReturn<ReturnType>::value) {
 					doReserveResults(results, callableList->doCountListeners());
 				}
 				callableList->forEachIf([&](const Handle & handle, Callback & callback) {
-					return doInvokeWithResults(*callableList, callback, handle, results, exceptionPolicy, args...);
+					return doInvokeWithResults(*callableList, callback, handle, results, exceptionPolicy, continuation.get(), args...);
 				});
 			}
 			else {
@@ -674,28 +710,45 @@ private:
 	template <typename R = ReturnType>
 	static typename std::enable_if<CanCollectReturn<R>::value, bool>::type
 	doInvokeWithResults(const CallbackList_ & listeners, Callback & callback, const Handle & handle,
-		DispatchResult * results, ExceptionPolicy exceptionPolicy,
+		DispatchResult * results, ExceptionPolicy exceptionPolicy, const ResultContinuation * continuation,
 		typename std::add_lvalue_reference<Args>::type ...args)
 	{
-		if(exceptionPolicy == ExceptionPolicy::Propagate) {
-			if(! results) { return listeners.doInvokeCallback(callback, args...); }
-			results->results.emplace_back(callback(args...));
-			results->handles.push_back(handle);
+		if(! results && ! continuation && exceptionPolicy == ExceptionPolicy::Propagate) {
+			return listeners.doInvokeCallback(callback, args...);
 		}
-		else {
-			bool failed = false;
-			try {
-				if(results) { results->results.emplace_back(doInvokeHandler(callback, failed, args...)); }
-				else { doInvokeHandler(callback, failed, args...); }
-			}
-			catch(...) {
-				// Result storage failures are not handler failures and still propagate.
-				if(! failed) { throw; }
-				doRecordListenerError(results, handle);
+		bool failed = false;
+		try {
+			if(results) { results->results.emplace_back(doInvokeHandler(callback, failed, args...)); }
+			else if(! continuation) {
+				// Preserve return-discarding behavior, including reference returns.
+				doInvokeHandler(callback, failed, args...);
 				using Continue = typename CallbackList_::CanContinueInvoking;
 				return Continue::canContinueInvoking(args...);
 			}
-			if(results) { results->handles.push_back(handle); }
+			else {
+				// Ordinary dispatch observes a stack value without allocating result vectors.
+				ListenerResult value = doInvokeHandler(callback, failed, args...);
+				return doContinueWithResult(handle, value, results, continuation, args...);
+			}
+		}
+		catch(...) {
+			// Only callback failures are governed by Continue; observer/storage failures propagate.
+			if(exceptionPolicy == ExceptionPolicy::Propagate || ! failed) { throw; }
+			doRecordListenerError(results, handle);
+			using Continue = typename CallbackList_::CanContinueInvoking;
+			return Continue::canContinueInvoking(args...);
+		}
+		results->handles.push_back(handle);
+		return doContinueWithResult(handle, results->results.back(), results, continuation, args...);
+	}
+
+	static bool doContinueWithResult(const Handle & handle, const ListenerResult & value,
+		DispatchResult * results, const ResultContinuation * continuation,
+		typename std::add_lvalue_reference<Args>::type ...args)
+	{
+		if(continuation && ! (*continuation)(handle, value, args...)) {
+			if(results) { results->stoppedByResult = true; }
+			return false;
 		}
 		using Continue = typename CallbackList_::CanContinueInvoking;
 		return Continue::canContinueInvoking(args...);
@@ -704,7 +757,7 @@ private:
 	template <typename R = ReturnType>
 	static typename std::enable_if<! CanCollectReturn<R>::value, bool>::type
 	doInvokeWithResults(const CallbackList_ & listeners, Callback & callback, const Handle & handle,
-		DispatchResult * results, ExceptionPolicy exceptionPolicy,
+		DispatchResult * results, ExceptionPolicy exceptionPolicy, const ResultContinuation * /*continuation*/,
 		typename std::add_lvalue_reference<Args>::type ...args)
 	{
 		if(exceptionPolicy == ExceptionPolicy::Propagate) { return listeners.doInvokeCallback(callback, args...); }
@@ -717,9 +770,9 @@ private:
 	template <typename Tuple, std::size_t ...Indices>
 	static bool doInvokePlannedArguments(const CallbackList_ & listeners, Callback & callback,
 		const Handle & handle, DispatchResult * results, ExceptionPolicy exceptionPolicy,
-		Tuple & arguments, IndexSequence<Indices...>)
+		const ResultContinuation * continuation, Tuple & arguments, IndexSequence<Indices...>)
 	{
-		return doInvokeWithResults(listeners, callback, handle, results, exceptionPolicy, std::get<Indices>(arguments)...);
+		return doInvokeWithResults(listeners, callback, handle, results, exceptionPolicy, continuation, std::get<Indices>(arguments)...);
 	}
 
 	void doSetListenerSelection(const Event & event, std::shared_ptr<ListenerSelection> stored)
@@ -743,6 +796,9 @@ private:
 		OrderingMap result;
 		for(const auto & item : source) {
 			auto configuration = item.second;
+			if(configuration.continuation) {
+				configuration.continuation = std::make_shared<ResultContinuation>(*configuration.continuation);
+			}
 			if(configuration.selection) {
 				configuration.selection = std::make_shared<ListenerSelection>(*configuration.selection);
 			}

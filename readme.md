@@ -49,14 +49,19 @@ install the headers from this fork.
   An optional per-event `setResultAggregator` produces an additional aggregate value.
 - Call `EventQueue::enqueueWithResults` to obtain a `std::future<DispatchResult>` that
   completes when the event is processed. Handler exceptions are delivered through the future.
+- Use `EventQueue::enqueueTask` for individually cancellable queued work. Its task
+  exposes `future` and `cancel()`; successful cancellation reports `QueuedEventCancelled`.
+- Set `setResultContinuation` to observe each successful return and decide whether
+  to invoke the remaining listeners. Reports include `stoppedByResult`.
 - Choose `setListenerExceptionPolicy(event, ListenerExceptionPolicy::Continue)` to run
   remaining listeners after a failure. Reports contain successful values and errors with
   their handles. `dispatchWithReport` and `enqueueWithReport` also support void handlers.
 
 Selection, plans and result APIs apply to `EventDispatcher` and `EventQueue`.
 Standalone `CallbackList` supports listener metadata. Heterogeneous classes retain
-their upstream APIs. Ordinary `dispatch` and `enqueue` keep their existing behavior
-and ignore handler returns. Ordering and planners are alternative selection modes.
+their upstream APIs. Ordinary `dispatch` and `enqueue` discard handler returns;
+an optional result continuation can inspect them and stop further invocation.
+Ordering and planners are alternative selection modes.
 
 See [listener metadata and plans](doc/listener_ordering.md),
 [return values and aggregation](doc/return_results.md),

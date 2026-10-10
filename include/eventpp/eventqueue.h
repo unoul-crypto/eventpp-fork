@@ -23,6 +23,12 @@
 
 namespace eventpp {
 
+class QueuedEventCancelled : public std::exception
+{
+public:
+	const char * what() const noexcept override { return "Queued event was cancelled"; }
+};
+
 namespace internal_ {
 
 template <
@@ -72,15 +78,28 @@ private:
 
 	struct QueuedResultState
 	{
-		QueuedResultState() : promise(new std::promise<typename super::DispatchResult>()), started(false) {}
+		explicit QueuedResultState(bool cancellable = false)
+			: promise(new std::promise<typename super::DispatchResult>()), started(false),
+			cancellation(cancellable ? std::make_exception_ptr(QueuedEventCancelled()) : std::exception_ptr()) {}
 
-		void cancel() noexcept
+		~QueuedResultState()
 		{
-			if(! started.exchange(true)) { promise.reset(); }
+			if(cancellation && ! started.load(std::memory_order_relaxed)) { cancel(); }
+		}
+
+		bool cancel() noexcept
+		{
+			if(started.exchange(true)) { return false; }
+			// Only the atomic claim winner touches the promise. Task cancellation has
+			// an explicit reason; legacy report futures retain broken_promise semantics.
+			if(cancellation) { promise->set_exception(cancellation); }
+			promise.reset();
+			return true;
 		}
 
 		std::unique_ptr<std::promise<typename super::DispatchResult> > promise;
 		typename Threading::template Atomic<bool> started;
+		const std::exception_ptr cancellation;
 	};
 
 	struct QueuedEvent_
@@ -114,6 +133,32 @@ public:
 	using Mutex = typename super::Mutex;
 	using DispatchResult = typename super::DispatchResult;
 	using ResultFuture = std::future<DispatchResult>;
+
+	class QueuedTask
+	{
+	private:
+		friend class EventQueueBase;
+		QueuedTask(ResultFuture future, const std::shared_ptr<QueuedResultState> & state)
+			: future(std::move(future)), state(state) {}
+
+	public:
+		QueuedTask() = default;
+		QueuedTask(QueuedTask &&) noexcept = default;
+		QueuedTask & operator = (QueuedTask &&) noexcept = default;
+		QueuedTask(const QueuedTask &) = delete;
+		QueuedTask & operator = (const QueuedTask &) = delete;
+
+		bool cancel() const noexcept
+		{
+			auto pending = state.lock();
+			return pending && pending->cancel();
+		}
+
+		ResultFuture future;
+
+	private:
+		std::weak_ptr<QueuedResultState> state;
+	};
 
 	struct DisableQueueNotify
 	{
@@ -200,11 +245,8 @@ public:
 		static_assert(super::ArgumentPassingMode::canIncludeEventType, "Event type should be included in enqueue arguments.");
 		using GetEvent = typename SelectGetEvent<Policies_, EventType_, HasFunctionGetEvent<Policies_, A...>::value>::Type;
 		auto state = std::make_shared<QueuedResultState>();
-		auto future = state->promise->get_future();
-		doEnqueue(QueuedEvent { GetEvent::getEvent(args...),
-			QueuedEventArgumentsType(std::forward<A>(args)...), std::move(state) });
-		if(doCanNotifyQueueAvailable()) { queueListConditionVariable.notify_one(); }
-		return future;
+		return doEnqueueResult(QueuedEvent {GetEvent::getEvent(args...),
+			QueuedEventArgumentsType(std::forward<A>(args)...), std::move(state)});
 	}
 
 	template <typename T, typename ...A>
@@ -214,11 +256,30 @@ public:
 		static_assert(super::ArgumentPassingMode::canExcludeEventType, "Event type should not be included in callback arguments.");
 		using GetEvent = typename SelectGetEvent<Policies_, EventType_, HasFunctionGetEvent<Policies_, T &&, A...>::value>::Type;
 		auto state = std::make_shared<QueuedResultState>();
-		auto future = state->promise->get_future();
-		doEnqueue(QueuedEvent { GetEvent::getEvent(std::forward<T>(first), args...),
-			QueuedEventArgumentsType(std::forward<A>(args)...), std::move(state) });
-		if(doCanNotifyQueueAvailable()) { queueListConditionVariable.notify_one(); }
-		return future;
+		return doEnqueueResult(QueuedEvent {GetEvent::getEvent(std::forward<T>(first), args...),
+			QueuedEventArgumentsType(std::forward<A>(args)...), std::move(state)});
+	}
+
+	template <typename ...A>
+	auto enqueueTask(A && ...args)
+		-> typename std::enable_if<sizeof...(A) == sizeof...(Args), QueuedTask>::type
+	{
+		static_assert(super::ArgumentPassingMode::canIncludeEventType, "Event type should be included in enqueue arguments.");
+		using GetEvent = typename SelectGetEvent<Policies_, EventType_, HasFunctionGetEvent<Policies_, A...>::value>::Type;
+		auto state = std::make_shared<QueuedResultState>(true);
+		return QueuedTask(doEnqueueResult(QueuedEvent {GetEvent::getEvent(args...),
+			QueuedEventArgumentsType(std::forward<A>(args)...), state}), state);
+	}
+
+	template <typename T, typename ...A>
+	auto enqueueTask(T && first, A && ...args)
+		-> typename std::enable_if<sizeof...(A) == sizeof...(Args), QueuedTask>::type
+	{
+		static_assert(super::ArgumentPassingMode::canExcludeEventType, "Event type should not be included in callback arguments.");
+		using GetEvent = typename SelectGetEvent<Policies_, EventType_, HasFunctionGetEvent<Policies_, T &&, A...>::value>::Type;
+		auto state = std::make_shared<QueuedResultState>(true);
+		return QueuedTask(doEnqueueResult(QueuedEvent {GetEvent::getEvent(std::forward<T>(first), args...),
+			QueuedEventArgumentsType(std::forward<A>(args)...), state}), state);
 	}
 
 	template <typename ...A>
@@ -362,7 +423,7 @@ public:
 
 			if(! tempList.empty()) {
 				for(auto it = tempList.begin(); it != tempList.end(); ) {
-					if(doInvokeFuncWithQueuedEvent(
+					if(doIsClaimedTask(it->get()) || doInvokeFuncWithQueuedEvent(
 							predictor,
 							it->get(),
 							typename MakeIndexSequence<sizeof...(Args)>::Type(), &tempList)
@@ -416,7 +477,7 @@ public:
 
 			if(! tempList.empty()) {
 				for(auto it = tempList.begin(); it != tempList.end(); ) {
-					if(doInvokeFuncWithQueuedEvent(
+					if(! doIsClaimedTask(it->get()) && doInvokeFuncWithQueuedEvent(
 							predictor,
 							it->get(),
 							typename MakeIndexSequence<sizeof...(Args)>::Type(), &tempList)
@@ -624,6 +685,19 @@ protected:
 	}
 
 private:
+	ResultFuture doEnqueueResult(QueuedEvent && item)
+	{
+		auto future = item.resultState->promise->get_future();
+		doEnqueue(std::move(item));
+		if(doCanNotifyQueueAvailable()) { queueListConditionVariable.notify_one(); }
+		return future;
+	}
+
+	static bool doIsClaimedTask(const QueuedEvent & event)
+	{
+		return event.resultState && event.resultState->cancellation && event.resultState->started.load();
+	}
+
 	// Caller holds queueListMutex; wait predicates must not lock it again.
 	bool doEmptyQueueLocked() const
 	{

@@ -70,5 +70,25 @@ int main()
 	owned.appendListener(1, [] { return std::unique_ptr<int>(new int(5)); });
 	auto ownedReport = owned.dispatchWithReport(1);
 	if(ownedReport.results.size() != 1 || *ownedReport.results[0] != 5) { return 10; }
+	queue.appendListener(1, [](int n) { return n * 3; });
+	queue.setResultContinuation(1, [](const decltype(queue)::Handle &, const int & result, const int & input) {
+		return result < input * 2;
+	});
+	auto task = queue.enqueueTask(1, 5);
+	queue.process();
+	auto taskReport = task.future.get();
+	if(taskReport.results != std::vector<int>{10} || !taskReport.stoppedByResult || task.cancel()) { return 11; }
+	auto cancelled = queue.enqueueTask(1, 5);
+	if(!cancelled.cancel() || cancelled.cancel()) { return 12; }
+	try { cancelled.future.get(); return 13; }
+	catch(const eventpp::QueuedEventCancelled &) {}
+	queue.processIf([](int) { return false; });
+	if(!queue.emptyQueue()) { return 14; }
+	queue.clearResultContinuation(1);
+	if(queue.dispatchWithResults(1, 5).results.size() != 2) { return 15; }
+	auto cancelledVoid = notifications.enqueueTask(1);
+	if(!cancelledVoid.cancel()) { return 16; }
+	try { cancelledVoid.future.get(); return 17; }
+	catch(const eventpp::QueuedEventCancelled &) {}
 	return 0;
 }

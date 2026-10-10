@@ -10,6 +10,7 @@ set(SRC_TEST
 	test_dispatcher_ordering.cpp
 	test_dispatcher_planner.cpp
 	test_dispatcher_results.cpp
+	test_result_continuation.cpp
 	test_listener_exceptions.cpp
 	test_metadata_update.cpp
 	test_listener_metadata.cpp
@@ -17,6 +18,7 @@ set(SRC_TEST
 	test_dispatcher_multithread.cpp
 	test_queue_basic.cpp
 	test_queue_results.cpp
+	test_queue_tasks.cpp
 	test_queue_ctors.cpp
 	test_queue_multithread.cpp
 	test_queue_ordered_list.cpp

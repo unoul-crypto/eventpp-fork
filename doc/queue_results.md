@@ -79,6 +79,63 @@ removed by a concurrent or nested `clearEvents` call.
 
 Discarding the returned future does not cancel queued execution.
 
+## Individually cancellable tasks
+
+`enqueueTask(...)` uses the same event/argument overloads as `enqueueWithReport`
+and returns a move-only `QueuedTask`. Its public `future` is a
+`std::future<DispatchResult>`; `bool cancel() const noexcept` attempts to prevent
+execution. Both value-returning handlers and void reports are supported.
+
+```cpp
+eventpp::EventQueue<int, int(int)> queue;
+queue.appendListener(1, [](int n) { return n * 2; });
+auto task = queue.enqueueTask(1, 5);
+if(task.cancel()) {
+    try { task.future.get(); }
+    catch(const eventpp::QueuedEventCancelled &) { /* Cancelled before execution. */ }
+}
+queue.process(); // Reclaims the cancelled record without invoking its handlers.
+```
+
+Cancellation and execution compete for one atomic claim. `cancel()` returns true
+only for the winner, makes the future ready with `eventpp::QueuedEventCancelled`
+before returning, and prevents handlers, selection/planning and aggregation from
+running for that task. It returns false once execution has been claimed, after a
+previous cancellation, for a moved-from/default task or after the queued state has
+expired. Execution is claimed before filters and listener selection; already
+running work is never interrupted. Future readiness can be checked with the
+standard `wait_for`; a failed cancellation does not mean the future is ready yet.
+
+`clearEvents`, destruction of pending queue records, abandoned processing batches
+and destruction of all undispatched taken copies use the same explicit exception
+for task futures. Existing `enqueueWithResults`/`enqueueWithReport` futures keep
+their `broken_promise` behavior. Handler and infrastructure failures still report
+their original exception; a task can also return a report with handler `errors`
+under the configured `Continue` policy.
+
+Cancellation marks a record rather than removing it immediately. Its arguments
+remain owned by the queue or saved copies until those records are reclaimed.
+`emptyQueue()` can therefore remain false after cancellation. `process`,
+`processOne`, `processIf` and `processUntil` reclaim cancelled/claimed task records;
+the predicate-based methods skip their predicate for records already claimed at
+the check. A predicate already running concurrently is not interrupted. Draining
+such records counts as processing for the method's boolean return value.
+
+Tasks and peek/take copies share the claim. Individual cancellation still works
+for an unstarted task detached into a processing batch or taken out of the queue.
+Queue destruction does not cancel taken work owned by a saved record. The task
+holds only a weak cancellation reference, so retaining it does not keep abandoned
+work alive. Destroying the task or consuming/discarding its future does not cancel
+execution. Concurrent `cancel()` calls and queue processing are supported under
+`MultipleThreading`; moving or destroying the task object must not overlap calls
+on that same object. `SingleThreading` retains its serialization requirement.
+
+Tasks select the current listeners, plans, aggregators and
+[result continuation](return_results.md#continue-or-stop-after-each-result) at
+execution time. `stoppedByResult` is available in the completed report. Tracking
+and its prebuilt cancellation exception are allocated only on the result/task
+enqueue paths; ordinary `enqueue` still allocates no completion state.
+
 ## peekEvent and takeEvent
 
 A result-bearing queued event and its copies share the same completion state. Dispatching

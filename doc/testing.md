@@ -16,19 +16,23 @@ The unit suite uses C++17 for test fixtures. Tutorials and
 `tests/compatibility/fork_cxx11.cpp` use C++11 without language extensions on GCC
 and Clang. The compatibility executable exercises metadata reads, atomic updates,
 listener snapshots, ordering, argument plans, aggregation, errors, queued results,
-void reports and move-only returns. MSVC uses its available default language mode;
-the GCC/Clang jobs provide the strict C++11 check.
+void reports, cancellable tasks, result continuation and move-only returns. MSVC
+uses its available default language mode; the GCC/Clang jobs provide the strict
+C++11 check.
 
 Thread cases include callback-list registration/removal, dispatch and queue
 processing, selection configuration changes, independent argument plans and
 result vectors, concurrent metadata readers/writers, exception-policy changes,
-and competing dispatches of a queued report. Regression cases tagged
+result-continuation configuration changes, cancellation versus task execution,
+cancellation of unstarted work in an in-flight batch, and competing dispatches of
+queued reports/tasks. Regression cases tagged
 `[race-regression]` additionally overlap ordinary traversal with removal, query
 list emptiness during mutation, repeat removal while a callback is in flight,
-and race queue insertion/recycling against all
-processing modes, peek/take, cancellation and wait predicates. They cover both
-ordinary and heterogeneous queues, in-flight emptiness and callback reentry. Assertions run after worker joins;
-test-owned shared state uses explicit synchronization. The thread job fails on
+and race queue insertion/recycling against all processing modes, peek/take,
+cancellation and wait predicates. They cover both
+ordinary and heterogeneous queues, in-flight emptiness and callback reentry.
+Assertions run after worker joins; test-owned shared state uses explicit
+synchronization. The thread job fails on
 the first reported race and fails if no tests match its CTest label.
 
 Sanitizers are separate builds. Instrumentation applies to test executables and
